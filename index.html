@@ -1209,11 +1209,12 @@ body{
     "  if (m.type === 'init'){",
     '    import(m.bundle).then(function(mod){',
     '      return mod.FilesetResolver.forVisionTasks(m.wasmDir).then(function(fs){',
-    '        return mod.HandLandmarker.createFromOptions(fs, {',
-    "          baseOptions: { modelAssetBuffer: new Uint8Array(m.buffer), delegate: 'CPU' },",
+    '        var mk = function(dl){ return mod.HandLandmarker.createFromOptions(fs, {',
+    "          baseOptions: { modelAssetBuffer: new Uint8Array(m.buffer), delegate: dl },",
     "          runningMode: 'VIDEO', numHands: 1,",
     '          minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5',
-    '        });',
+    '        }); };',
+    '        return mk("GPU").catch(function(){ return mk("CPU"); });',
     '      });',
     "    }).then(function(x){ lm = x; self.postMessage({type:'ready'}); })",
     "      .catch(function(e){ self.postMessage({type:'error', stage:'init', msg:String((e && e.message) || e)}); });",
@@ -1509,6 +1510,22 @@ body{
 
   // 页面稳定后偷偷把手势模型拉到本地，用户点按钮时就不用干等
   window.setTimeout(prefetchHandAssets, 3500);
+
+  // 调试口子：地址带 debug=1 时把帧率和识别耗时写进标题，方便远程看数据
+  if (location.search.indexOf('debug=1') >= 0){
+    var diagFrames = 0;
+    (function diagLoop(){ diagFrames++; window.requestAnimationFrame(diagLoop); })();
+    window.setInterval(function(){
+      var c = '-';
+      if (handCost.length){
+        var s = 0;
+        for (var i = 0; i < handCost.length; i++) s += handCost[i];
+        c = Math.round(s / handCost.length) + '/' + Math.round(Math.max.apply(null, handCost)) + 'ms';
+      }
+      document.title = 'fps ' + diagFrames + ' | ' + c + ' | ' + (handStateTxt ? handStateTxt.textContent : '');
+      diagFrames = 0;
+    }, 1000);
+  }
 })();
 </script>
 </body>
