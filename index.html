@@ -812,6 +812,16 @@ body{
       if (Math.abs(flingVel) < 0.008) flingVel = 0;
     }
 
+    // 手掌转动带来的旋转：识别帧之间由这里逐帧补帧，转起来才是连续的
+    if (gestureOn && burst > 0.3){
+      if (performance.now() - handVelAt < 320){
+        angle += handVel * dt;
+      } else if (handVel){
+        handVel *= Math.exp(-7 * dt);
+        if (Math.abs(handVel) < 0.02) handVel = 0;
+      }
+    }
+
     // 散开/聚合、缩放都做缓动，避免硬跳
     var k = 1 - Math.exp(-dt * 6.5);
     burst += (burstTarget - burst) * k;
@@ -1017,6 +1027,9 @@ body{
   var handCandidate = '';
   var handCandidateN = 0;
   var handPrevRot = null;
+  var handPrevT = 0;
+  var handVel = 0;
+  var handVelAt = 0;
   var handPrevX = null;
   var handRotSm = 0;
   var handLastSee = 0;
@@ -1083,33 +1096,39 @@ body{
     if (burst > 0.3){
       var rot = Math.atan2(lm[9].y - lm[0].y, lm[9].x - lm[0].x);
       var px = (lm[0].x + lm[9].x) * 0.5;
+      var nowT = performance.now();
       if (handPrevRot !== null){
         var d = rot - handPrevRot;
         while (d > Math.PI) d -= Math.PI * 2;
         while (d < -Math.PI) d += Math.PI * 2;
         if (Math.abs(d) < 0.5){                  // 丢掉跟踪跳变
-          handRotSm = handRotSm * 0.55 + d * 0.45;
-          if (Math.abs(handRotSm) > 0.004){      // 死区，免得噪声累积成漂移
-            angle -= handRotSm * 1.15;           // 摄像头预览是镜像的，方向取反才跟手
-            paintIfIdle();
+          handRotSm = handRotSm * 0.6 + d * 0.4;
+          if (Math.abs(handRotSm) > 0.006){      // 死区，免得噪声累积成漂移
+            // 识别只有十几帧，这里换算成角速度交给渲染循环逐帧积分，转起来才连续
+            var angDelta = -handRotSm * 1.15;    // 摄像头预览是镜像的，方向取反才跟手
+            if (handPrevX !== null){
+              var dxMove = px - handPrevX;
+              if (Math.abs(dxMove) > 0.004 && Math.abs(dxMove) < 0.16) angDelta -= dxMove * 0.5;
+            }
+            var dtS = handPrevT ? Math.max(0.03, Math.min(0.3, (nowT - handPrevT) / 1000)) : 0.09;
+            var vel = angDelta / dtS;
+            if (vel > 2.2) vel = 2.2; else if (vel < -2.2) vel = -2.2;
+            handVel = handVel * 0.45 + vel * 0.55;
+            handVelAt = nowT;
           }
         } else {
           handRotSm = 0;
         }
       }
-      if (handPrevX !== null){
-        var dx = px - handPrevX;
-        if (Math.abs(dx) > 0.004 && Math.abs(dx) < 0.16){
-          angle -= dx * 0.5;
-          paintIfIdle();
-        }
-      }
       handPrevRot = rot;
       handPrevX = px;
+      handPrevT = nowT;
     } else {
       handPrevRot = null;
       handPrevX = null;
+      handPrevT = 0;
       handRotSm = 0;
+      handVel = 0;
     }
   }
 
@@ -1357,7 +1376,7 @@ body{
       var now = performance.now();
       var videoOk = handVideo.readyState >= 2 && handVideo.currentTime > 0;
 
-      if (handWorker && workerReady && videoOk && now - lastSent > 88){
+      if (handWorker && workerReady && videoOk && now - lastSent > 66){
         // 上一帧卡住时兜底解锁，避免整条链路停死
         if (workerBusy && now - workerSentAt > 1500) workerBusy = false;
         if (!workerBusy){
@@ -1368,7 +1387,7 @@ body{
             handWorker.postMessage({ type: 'frame', bmp: bmp, ts: Math.round(performance.now()) }, [bmp]);
           }).catch(function(){ workerBusy = false; });
         }
-      } else if (handModel && videoOk && now - lastSent > 88){
+      } else if (handModel && videoOk && now - lastSent > 66){
         lastSent = now;
         try {
           var t0 = performance.now();
@@ -1437,6 +1456,7 @@ body{
     handVideo.srcObject = null;
     workerBusy = false;
     handPrevRot = null; handPrevX = null; handRotSm = 0;
+    handPrevT = 0; handVel = 0;
     handCandidate = ''; handCandidateN = 0;
   }
 
