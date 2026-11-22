@@ -94,7 +94,7 @@ body{
   max-width:100%;
   pointer-events:none;
 }
-.controls{display:flex;gap:10px;pointer-events:auto;}
+.controls{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;pointer-events:auto;max-width:min(92vw,560px);}
 .ctrl{
   display:inline-flex;
   align-items:center;
@@ -135,8 +135,66 @@ body{
   white-space:nowrap;
   pointer-events:none;
 }
+/* ---------- 手势识别面板 ---------- */
+.gesture{
+  position:absolute;
+  right:calc(16px + env(safe-area-inset-right, 0px));
+  bottom:calc(96px + env(safe-area-inset-bottom, 0px));
+  z-index:4;
+  display:none;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:8px;
+  pointer-events:none;
+}
+.gesture.on{display:flex;}
+.cam-wrap{
+  position:relative;
+  width:168px;
+  height:126px;
+  border-radius:12px;
+  overflow:hidden;
+  border:1px solid rgba(150,205,240,.26);
+  background:#04080f;
+  box-shadow:0 12px 30px rgba(0,0,0,.55);
+}
+#cam{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block;}
+.cam-hint{
+  position:absolute;
+  left:0;right:0;bottom:0;
+  padding:14px 8px 5px;
+  font-size:10px;
+  letter-spacing:.04em;
+  color:rgba(226,242,255,.62);
+  background:linear-gradient(to top,rgba(3,8,16,.86),rgba(3,8,16,0));
+}
+.gesture .state{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  height:26px;
+  padding:0 11px;
+  border-radius:999px;
+  font-size:11.5px;
+  letter-spacing:.02em;
+  color:rgba(226,242,255,.9);
+  background:rgba(7,16,28,.8);
+  border:1px solid rgba(150,205,240,.24);
+  white-space:nowrap;
+}
+.gesture .state i{
+  width:6px;height:6px;border-radius:50%;
+  background:#7fd7ff;
+  box-shadow:0 0 6px rgba(127,215,255,.7);
+  flex:0 0 auto;
+}
+.gesture .state.live i{background:#9dffcf;box-shadow:0 0 7px rgba(157,255,207,.8);}
+.gesture .state.warn i{background:#ffd39d;box-shadow:0 0 7px rgba(255,211,157,.8);}
+
 @media (max-width:760px){
   .greeting{top:9%;padding-right:16px;}
+  .cam-wrap{width:128px;height:96px;}
+  .gesture{bottom:calc(88px + env(safe-area-inset-bottom, 0px));}
 }
 @media (max-height:520px) and (orientation:landscape){
   .greeting{top:22%;}
@@ -170,8 +228,24 @@ body{
         </svg>
         <span id="spinLabel">暂停旋转</span>
       </button>
+      <button class="ctrl" id="btnHand" type="button" aria-pressed="false">
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M6.4 9.7V5.5M8.8 9.3V4.3M11.2 9.5V5.2M13.7 10.3V6.9"/>
+          <path d="M6.4 9.7c0 4.3 1.5 6.5 3.7 6.5 2 0 3.5-2.2 3.5-5.9v-1"/>
+          <path d="M6.4 9.7c-.8-.5-1.7.2-1.5 1.1l.8 2.3"/>
+        </svg>
+        <span id="handLabel">手势模式</span>
+      </button>
     </div>
     <div class="hint">单指拖动旋转 · 双指缩放 · 点击树身散开／聚合</div>
+  </div>
+
+  <div class="gesture" id="gestureBox">
+    <div class="cam-wrap">
+      <video id="cam" playsinline muted autoplay></video>
+      <div class="cam-hint">画面仅本地识别，不上传</div>
+    </div>
+    <div class="state" id="handStateBox"><i></i><span id="handState">等待手部</span></div>
   </div>
 </div>
 
@@ -912,9 +986,261 @@ body{
     syncSpinUI();
   });
 
+  /* ---------- 手势：张开五指=散开 / 握拳=合拢 / 转手=旋转 ---------- */
+  var HAND_BASES = [
+    'https://registry.npmmirror.com/@mediapipe/hands/0.4.1675469240/files/',
+    'https://fastly.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/'
+  ];
+  var handsBase = '';
+  var handModel = null;
+  var gestureOn = false;
+  var handStream = null;
+  var handVideo = document.getElementById('cam');
+  var gestureBox = document.getElementById('gestureBox');
+  var handStateBox = document.getElementById('handStateBox');
+  var handStateTxt = document.getElementById('handState');
+  var btnHand = document.getElementById('btnHand');
+  var handLabel = document.getElementById('handLabel');
+
+  var handCandidate = '';
+  var handCandidateN = 0;
+  var handPrevRot = null;
+  var handPrevX = null;
+  var handRotSm = 0;
+  var handLastSee = 0;
+
+  function setHandState(text, cls){
+    handStateTxt.textContent = text;
+    handStateBox.className = 'state' + (cls ? ' ' + cls : '');
+  }
+
+  function paintIfIdle(){
+    if (!running) renderFrame();
+  }
+
+  // 只数四指：指尖离手腕比指节远，就是伸开的。拇指不参与判断
+  function countExtended(lm){
+    var wrist = lm[0];
+    var tips = [8, 12, 16, 20];
+    var pips = [6, 10, 14, 18];
+    var n = 0;
+    for (var i = 0; i < 4; i++){
+      var dxT = lm[tips[i]].x - wrist.x, dyT = lm[tips[i]].y - wrist.y;
+      var dxP = lm[pips[i]].x - wrist.x, dyP = lm[pips[i]].y - wrist.y;
+      if (Math.sqrt(dxT * dxT + dyT * dyT) > Math.sqrt(dxP * dxP + dyP * dyP) * 1.06) n++;
+    }
+    return n;
+  }
+
+  function applyBurstFromHand(open){
+    if (open && burstTarget < 0.5){
+      burstTarget = 1;
+      syncBurstUI();
+      paintIfIdle();
+    } else if (!open && burstTarget > 0.5){
+      burstTarget = 0;
+      syncBurstUI();
+      paintIfIdle();
+    }
+  }
+
+  function onHandLandmarks(lm){
+    var ext = countExtended(lm);
+    handLastSee = performance.now();
+
+    // 连续 3 帧一致才切换，避免手指抖动来回跳
+    var cls = ext >= 4 ? 'open' : (ext <= 1 ? 'fist' : 'mid');
+    if (cls !== handCandidate){
+      handCandidate = cls;
+      handCandidateN = 0;
+    }
+    handCandidateN++;
+    if (cls !== 'mid' && handCandidateN >= 3) applyBurstFromHand(cls === 'open');
+
+    setHandState(
+      cls === 'open' ? '张开五指 · 散开' :
+      cls === 'fist' ? '握拳 · 合拢' :
+      '手势调整中',
+      'live'
+    );
+
+    // 散开态下，手的转动和左右移动带动相机
+    if (burst > 0.3){
+      var rot = Math.atan2(lm[9].y - lm[0].y, lm[9].x - lm[0].x);
+      var px = (lm[0].x + lm[9].x) * 0.5;
+      if (handPrevRot !== null){
+        var d = rot - handPrevRot;
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        if (Math.abs(d) < 0.5){                  // 丢掉跟踪跳变
+          handRotSm = handRotSm * 0.55 + d * 0.45;
+          if (Math.abs(handRotSm) > 0.004){      // 死区，免得噪声累积成漂移
+            angle -= handRotSm * 1.15;           // 摄像头预览是镜像的，方向取反才跟手
+            paintIfIdle();
+          }
+        } else {
+          handRotSm = 0;
+        }
+      }
+      if (handPrevX !== null){
+        var dx = px - handPrevX;
+        if (Math.abs(dx) > 0.004 && Math.abs(dx) < 0.16){
+          angle -= dx * 0.5;
+          paintIfIdle();
+        }
+      }
+      handPrevRot = rot;
+      handPrevX = px;
+    } else {
+      handPrevRot = null;
+      handPrevX = null;
+      handRotSm = 0;
+    }
+  }
+
+  function onHandResults(res){
+    if (!gestureOn) return;
+    var lms = res && res.multiHandLandmarks;
+    if (!lms || !lms.length){
+      if (performance.now() - handLastSee > 300){
+        handCandidate = ''; handCandidateN = 0;
+        handPrevRot = null; handPrevX = null;
+        setHandState('未检测到手', 'warn');
+      }
+      return;
+    }
+    onHandLandmarks(lms[0]);
+  }
+
+  function loadHandsScript(i){
+    if (i >= HAND_BASES.length){
+      setHandState('识别组件加载失败', 'warn');
+      stopGesture();
+      return;
+    }
+    var s = document.createElement('script');
+    s.src = HAND_BASES[i] + 'hands.js';
+    s.onload = function(){
+      handsBase = HAND_BASES[i];
+      startHandsModel();
+    };
+    s.onerror = function(){ loadHandsScript(i + 1); };
+    document.head.appendChild(s);
+  }
+
+  function startHandsModel(){
+    if (typeof window.Hands !== 'function'){
+      setHandState('识别组件不可用', 'warn');
+      return;
+    }
+    handModel = new window.Hands({ locateFile: function(f){ return handsBase + f; } });
+    handModel.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 0,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.55
+    });
+    handModel.onResults(onHandResults);
+
+    var lastSent = 0;
+    (function pump(){
+      if (!gestureOn) return;
+      var now = performance.now();
+      if (handModel && handVideo.readyState >= 2 && handVideo.currentTime > 0 && now - lastSent > 60){
+        lastSent = now;
+        try { handModel.send({ image: handVideo }); } catch (e){}
+      }
+      window.requestAnimationFrame(pump);
+    })();
+  }
+
+  function startGesture(){
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      setHandState('浏览器不支持摄像头', 'warn');
+      return;
+    }
+    gestureOn = true;
+    syncHandUI();
+    gestureBox.classList.add('on');
+    setHandState('正在打开摄像头…', '');
+
+    navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
+    }).then(function(stream){
+      handStream = stream;
+      handVideo.srcObject = stream;
+      var p = handVideo.play();
+      if (p && p.catch) p.catch(function(){});
+      if (!handModel){
+        if (typeof window.Hands === 'function'){
+          handsBase = handsBase || HAND_BASES[0];
+          startHandsModel();
+        } else {
+          loadHandsScript(0);
+        }
+      }
+    }).catch(function(err){
+      gestureOn = false;
+      syncHandUI();
+      if (handStream){
+        handStream.getTracks().forEach(function(t){ t.stop(); });
+        handStream = null;
+      }
+      setHandState(err && err.name === 'NotAllowedError' ? '摄像头权限被拒绝' : '摄像头打开失败', 'warn');
+      window.setTimeout(function(){
+        if (!gestureOn) gestureBox.classList.remove('on');
+      }, 2600);
+    });
+  }
+
+  function stopGesture(){
+    gestureOn = false;
+    syncHandUI();
+    gestureBox.classList.remove('on');
+    if (handStream){
+      handStream.getTracks().forEach(function(t){ t.stop(); });
+      handStream = null;
+    }
+    handVideo.srcObject = null;
+    handPrevRot = null; handPrevX = null; handRotSm = 0;
+    handCandidate = ''; handCandidateN = 0;
+  }
+
+  function syncHandUI(){
+    btnHand.setAttribute('aria-pressed', gestureOn ? 'true' : 'false');
+    handLabel.textContent = gestureOn ? '关闭手势' : '手势模式';
+  }
+
+  btnHand.addEventListener('click', function(){
+    if (gestureOn) stopGesture(); else startGesture();
+  });
+
+  // 调试口子：喂 21 个点进来就能走一遍识别逻辑（不接摄像头也能测）
+  window.__handDebug = {
+    count: function(lm){ return countExtended(lm); },
+    feed: function(lm){ onHandLandmarks(lm); },
+    angle: function(){ return angle; },
+    burst: function(){ return burstTarget; },
+    model: function(){ return handModel ? 'ready' : 'none'; },
+    initModel: function(){ if (!handModel) loadHandsScript(0); return 'loading'; },
+    testSend: function(){
+      if (!handModel) return 'no-model';
+      var c = document.createElement('canvas');
+      c.width = 320; c.height = 240;
+      var g = c.getContext('2d');
+      g.fillStyle = '#101820'; g.fillRect(0, 0, 320, 240);
+      gestureOn = true;
+      handModel.send({ image: c });
+      return 'sent';
+    }
+  };
+
   document.addEventListener('visibilitychange', function(){
-    if (document.hidden) stop();
-    else if (!reduced) start();
+    if (document.hidden){
+      if (gestureOn) stopGesture();
+      stop();
+    } else if (!reduced) start();
   });
 
   var resizeTimer = 0;
