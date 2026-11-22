@@ -309,6 +309,15 @@ body{
         <span>清空照片</span>
       </button>
       <input id="photoInput" type="file" accept="image/*" multiple hidden>
+      <button class="ctrl" id="btnMusic" type="button" aria-pressed="false" title="背景音乐（快捷键 M）">
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M12.2 4.1v9.3" stroke-linecap="round"/>
+          <path d="M12.2 4.5l4.6-1.1v2.9l-4.6 1.1" stroke-linecap="round"/>
+          <circle cx="9.5" cy="14.1" r="2.7"/>
+          <path d="M15.5 15.4c.9-.9 2.4-.9 3.3 0" stroke-linecap="round" opacity=".8"/>
+        </svg>
+        <span id="musicLabel">音乐</span>
+      </button>
       <button class="ctrl" id="btnHideUI" type="button" aria-pressed="false" title="隐藏所有按钮（快捷键 H）">
         <svg viewBox="0 0 20 20" aria-hidden="true">
           <path d="M2.6 10s2.9-5 7.4-5 7.4 5 7.4 5-2.9 5-7.4 5-7.4-5-7.4-5z"/>
@@ -963,6 +972,7 @@ body{
   var hadPinch = false;
   var downX = 0, downY = 0, downT = 0;
   var movedFar = false;
+  var suppressTap = false;   // "首次点击只恢复音乐、不触发散开"
 
   function pinchDistance(){
     var ids = [];
@@ -1055,7 +1065,8 @@ body{
     pointerCount = Math.max(0, pointerCount - 1);
 
     if (pointerCount === 0){
-      var wasTap = !hadPinch && !movedFar && (performance.now() - downT) < 480;
+      var wasTap = !hadPinch && !movedFar && (performance.now() - downT) < 480 && !suppressTap;
+      suppressTap = false;
       endDrag();
       if (wasTap) toggleBurst();
       pinchStartDist = 0;
@@ -1943,7 +1954,148 @@ body{
   };
 
   /* ==========================================================================
-     8. 界面隐藏（截图／录屏）
+     8. 背景音乐（Web Audio 现场合成，不依赖音频文件）
+     ========================================================================== */
+  var btnMusic = document.getElementById('btnMusic');
+  var bgmCtx = null, bgmMaster = null, bgmOn = false, bgmTimer = 0;
+  var bgmNextChord = 0, bgmNextBell = 0, bgmChordIdx = 0;
+  // C - G - Am - F：慢速暖气团和弦
+  var BGM_CHORDS = [[48, 52, 55], [43, 47, 50], [45, 48, 52], [41, 45, 48]];
+
+  function midiFreq(m){ return 440 * Math.pow(2, (m - 69) / 12); }
+
+  function ensureAudio(){
+    if (bgmCtx) return true;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    try {
+      bgmCtx = new AC();
+      bgmMaster = bgmCtx.createGain();
+      bgmMaster.gain.value = 0.0001;
+      bgmMaster.connect(bgmCtx.destination);
+      return true;
+    } catch (e){ bgmCtx = null; return false; }
+  }
+
+  function playPad(t, notes, dur){
+    for (var i = 0; i < notes.length; i++){
+      var osc = bgmCtx.createOscillator();
+      var g = bgmCtx.createGain();
+      osc.type = i === 0 ? 'sine' : 'triangle';
+      osc.frequency.value = midiFreq(notes[i]);
+      var lvl = i === 0 ? 0.05 : 0.026;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(lvl, t + 1.5);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      osc.connect(g);
+      g.connect(bgmMaster);
+      osc.start(t);
+      osc.stop(t + dur + 0.05);
+    }
+  }
+
+  function playBell(t, midi, vel){
+    var f = midiFreq(midi);
+    function voice(mult, lvl, decay){
+      var o = bgmCtx.createOscillator();
+      var g = bgmCtx.createGain();
+      o.type = 'triangle';
+      o.frequency.value = f * mult;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(lvl * vel, t + 0.025);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+      o.connect(g);
+      g.connect(bgmMaster);
+      o.start(t);
+      o.stop(t + decay + 0.05);
+    }
+    voice(1, 0.105, 2.0);
+    voice(2, 0.03, 1.3);
+  }
+
+  function bgmTick(){
+    if (!bgmOn || !bgmCtx || bgmCtx.state !== 'running') return;
+    var t = bgmCtx.currentTime;
+    if (bgmNextChord < t) bgmNextChord = t + 0.05;
+    while (bgmNextChord < t + 1.0){
+      playPad(bgmNextChord, BGM_CHORDS[bgmChordIdx], 6.4);
+      bgmChordIdx = (bgmChordIdx + 1) % BGM_CHORDS.length;
+      bgmNextChord += 6.2;
+    }
+    if (bgmNextBell < t) bgmNextBell = t + 0.4;
+    while (bgmNextBell < t + 1.0){
+      var ch = BGM_CHORDS[bgmChordIdx];
+      var note = ch[(Math.random() * 3) | 0] + 12 + (Math.random() < 0.28 ? 7 : 0);
+      playBell(bgmNextBell, note, 0.75 + Math.random() * 0.35);
+      bgmNextBell += 1.4 + Math.random() * 1.2;
+    }
+  }
+
+  function syncBGMUI(){
+    btnMusic.setAttribute('aria-pressed', bgmOn ? 'true' : 'false');
+    btnMusic.setAttribute('aria-label', bgmOn ? '关闭背景音乐' : '播放背景音乐');
+  }
+
+  function startBGM(){
+    if (!ensureAudio()) return;
+    bgmOn = true;
+    syncBGMUI();
+    try { if (bgmCtx.state === 'suspended') bgmCtx.resume(); } catch (e){}
+    var now = bgmCtx.currentTime;
+    bgmMaster.gain.cancelScheduledValues(now);
+    bgmMaster.gain.setValueAtTime(Math.max(0.0001, bgmMaster.gain.value), now);
+    bgmMaster.gain.linearRampToValueAtTime(0.48, now + 1.4);
+    bgmNextChord = now + 0.2;
+    bgmNextBell = now + 0.9;
+    bgmChordIdx = 0;
+    if (!bgmTimer) bgmTimer = window.setInterval(bgmTick, 160);
+  }
+
+  function stopBGM(){
+    bgmOn = false;
+    syncBGMUI();
+    if (bgmTimer){ window.clearInterval(bgmTimer); bgmTimer = 0; }
+    if (bgmCtx){
+      var now = bgmCtx.currentTime;
+      bgmMaster.gain.cancelScheduledValues(now);
+      bgmMaster.gain.setValueAtTime(Math.max(0.0001, bgmMaster.gain.value), now);
+      bgmMaster.gain.linearRampToValueAtTime(0.0001, now + 0.5);
+      window.setTimeout(function(){ if (!bgmOn && bgmCtx) try { bgmCtx.suspend(); } catch (e){} }, 640);
+    }
+  }
+
+  function toggleBGM(){
+    if (bgmOn) stopBGM(); else startBGM();
+    try { localStorage.setItem('tree-bgm', bgmOn ? '1' : '0'); } catch (e){}
+  }
+
+  btnMusic.addEventListener('click', function(e){ e.stopPropagation(); toggleBGM(); });
+
+  window.__bgmDebug = {
+    on: function(){ return bgmOn; },
+    state: function(){ return bgmCtx ? bgmCtx.state : 'none'; },
+    mode: function(){ return 'chord-' + bgmChordIdx; }
+  };
+
+  // 上次开着音乐：等第一次操作页面时再起（浏览器不允许无交互自动播放）
+  try {
+    if (localStorage.getItem('tree-bgm') === '1'){
+      var armBGM = function(ev){
+        if (ev && ev.target && ev.target.closest && ev.target.closest('.controls')) return;
+        window.removeEventListener('pointerdown', armBGM);
+        window.removeEventListener('keydown', armBGM);
+        if (!bgmOn){
+          startBGM();
+          suppressTap = true;   // 这一下只当"开音乐"，不让树跟着散开
+        }
+      };
+      window.addEventListener('pointerdown', armBGM);
+      window.addEventListener('keydown', armBGM);
+    }
+  } catch (e){}
+
+  /* ==========================================================================
+     9. 界面隐藏（截图／录屏）
      ========================================================================== */
   var stageEl = document.getElementById('stage');
   var dockEl = document.querySelector('.dock');
@@ -1997,6 +2149,7 @@ body{
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     var t = e.target;
     if (t && t.closest && t.closest('[contenteditable="true"],input,textarea')) return;
+    if (e.key === 'm' || e.key === 'M'){ toggleBGM(); return; }
     if (e.key === 'h' || e.key === 'H'){ setPinned(!uiPinned); }
   });
   window.addEventListener('pointermove', poke, {passive:true});
