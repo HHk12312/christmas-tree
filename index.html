@@ -987,17 +987,21 @@ body{
   });
 
   /* ---------- 手势：张开五指=散开 / 握拳=合拢 / 转手=旋转 ---------- */
-  // 运行库和 wasm 走国内快的 npm 镜像（约 6MB/s），模型走 MediaPipe 官方存储（约 2.8MB/s）
-  // GitHub Pages 只有 30KB/s，只能当兜底
+  // 运行库和 wasm 走国内快的 npm 镜像（约 6MB/s）；模型走 MediaPipe 官方存储，并在页面空闲时后台预先下载
+  // GitHub Pages 只有 30KB/s，只当兜底
   var HAND_HOSTS = [
     { script: 'https://registry.npmmirror.com/@mediapipe/tasks-vision/0.10.21/files',
-      wasm: 'https://registry.npmmirror.com/@mediapipe/tasks-vision/0.10.21/files/wasm',
-      model: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' },
+      wasm: 'https://registry.npmmirror.com/@mediapipe/tasks-vision/0.10.21/files/wasm' },
     { script: 'https://hhk12312.github.io/christmas-tree',
-      wasm: 'https://hhk12312.github.io/christmas-tree',
-      model: 'https://hhk12312.github.io/christmas-tree/hand_landmarker.task' }
+      wasm: 'https://hhk12312.github.io/christmas-tree' }
   ];
+  var HAND_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+  var HAND_MODEL_ALT = 'https://hhk12312.github.io/christmas-tree/hand_landmarker.task';
   var handHost = HAND_HOSTS[0];
+  var handLibPromise = null;
+  var modelBuf = null;
+  var modelPct = 0;
+  var modelPromise = null;
   var handLib = null;
   var handLoading = false;
   var handModel = null;
@@ -1122,30 +1126,88 @@ body{
     onHandLandmarks(lms[0]);
   }
 
+  function paintHandProgress(){
+    if (gestureOn && !handModel && handLoading && modelPct > 0 && modelPct < 1){
+      setHandState('模型加载中 ' + Math.round(modelPct * 100) + '%', '');
+    }
+  }
+
+  function downloadModel(url){
+    return fetch(url).then(function(res){
+      if (!res.ok) throw new Error('model-' + res.status);
+      var total = Number(res.headers.get('content-length')) || 0;
+      var rd = res.body.getReader();
+      var chunks = [];
+      var got = 0;
+      return (function step(){
+        return rd.read().then(function(x){
+          if (x.done){
+            var buf = new Uint8Array(got);
+            var off = 0;
+            for (var i = 0; i < chunks.length; i++){ buf.set(chunks[i], off); off += chunks[i].length; }
+            return buf;
+          }
+          chunks.push(x.value);
+          got += x.value.length;
+          if (total) modelPct = Math.min(0.99, got / total);
+          paintHandProgress();
+          return step();
+        });
+      })();
+    });
+  }
+
+  function getModelBuffer(){
+    if (modelPromise) return modelPromise;
+    modelPromise = downloadModel(HAND_MODEL_URL)
+      .catch(function(){ return downloadModel(HAND_MODEL_ALT); })
+      .then(function(buf){
+        modelBuf = buf;
+        modelPct = 1;
+        paintHandProgress();
+        return buf;
+      })
+      .catch(function(err){
+        modelPromise = null;
+        throw err;
+      });
+    return modelPromise;
+  }
+
+  // 执行环境：npm 镜像优先，取不到再回落到自己托管的 GitHub Pages
+  function loadLib(){
+    if (handLibPromise) return handLibPromise;
+    function tryHost(i){
+      if (i >= HAND_HOSTS.length) return Promise.reject(new Error('no-host'));
+      var h = HAND_HOSTS[i];
+      return import(h.script + '/vision_bundle.mjs').then(function(mod){
+        return mod.FilesetResolver.forVisionTasks(h.wasm).then(function(fileset){
+          handHost = h;
+          handLib = mod;
+          return { mod: mod, fileset: fileset };
+        });
+      }).catch(function(){ return tryHost(i + 1); });
+    }
+    handLibPromise = tryHost(0).catch(function(err){
+      handLibPromise = null;
+      throw err;
+    });
+    return handLibPromise;
+  }
+
   function ensureHandModel(){
     if (handModel || handLoading) return;
     handLoading = true;
-    setHandState('模型加载中…', '');
+    if (!modelPct) setHandState('模型加载中…', '');
+    else paintHandProgress();
 
-    function withHost(host){
-      return import(host.script + '/vision_bundle.mjs').then(function(mod){
-        return mod.FilesetResolver.forVisionTasks(host.wasm).then(function(fileset){
-          return { mod: mod, fileset: fileset, host: host };
-        });
-      });
-    }
-    function firstOk(list, i){
-      if (i >= list.length) return Promise.reject(new Error('no-host'));
-      return withHost(list[i]).catch(function(){ return firstOk(list, i + 1); });
-    }
-
-    firstOk(HAND_HOSTS, 0).then(function(ctx){
-      handLib = ctx.mod;
-      handHost = ctx.host;
+    Promise.all([loadLib(), getModelBuffer()]).then(function(v){
+      var fileset = v[0].fileset;
+      var buf = v[1];
       function create(delegate){
-        return handLib.HandLandmarker.createFromOptions(ctx.fileset, {
+        return handLib.HandLandmarker.createFromOptions(fileset, {
           baseOptions: {
-            modelAssetPath: ctx.host.model,
+            modelAssetBuffer: buf,
             delegate: delegate
           },
           runningMode: 'VIDEO',
@@ -1167,6 +1229,15 @@ body{
       setHandState('模型加载失败', 'warn');
       handPumpError = (err && err.message) ? err.message : 'load-failed';
     });
+  }
+
+  // 页面空闲时后台预载，点「手势模式」就不用等
+  function prefetchHandAssets(){
+    var c = navigator.connection || {};
+    if (c.saveData) return;
+    if (c.effectiveType && /2g|3g/.test(c.effectiveType)) return;
+    getModelBuffer().catch(function(){});
+    loadLib().catch(function(){});
   }
 
   function startHandPump(){
@@ -1304,6 +1375,9 @@ body{
   } else {
     start();
   }
+
+  // 页面稳定后偷偷把手势模型拉到本地，用户点按钮时就不用干等
+  window.setTimeout(prefetchHandAssets, 3500);
 })();
 </script>
 </body>
