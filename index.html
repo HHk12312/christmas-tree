@@ -156,6 +156,35 @@ body{
   white-space:nowrap;
   pointer-events:none;
 }
+/* ---------- 界面隐藏（截图／录屏用） ---------- */
+.dock,.gesture{transition:opacity .34s ease, transform .34s ease;}
+#stage.ui-idle .dock,
+#stage.ui-hide .dock{
+  opacity:0;
+  pointer-events:none;
+  transform:translateX(-50%) translateY(12px);
+}
+#stage.ui-hide .gesture{opacity:0;pointer-events:none;}
+#uiPeek{
+  position:absolute;
+  right:calc(14px + env(safe-area-inset-right, 0px));
+  bottom:calc(14px + env(safe-area-inset-bottom, 0px));
+  z-index:6;
+  width:32px;height:32px;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:50%;
+  color:rgba(206,232,255,.86);
+  background:rgba(6,14,26,.62);
+  border:1px solid rgba(150,200,238,.22);
+  cursor:pointer;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .3s ease, background .2s ease;
+  -webkit-tap-highlight-color:transparent;
+}
+#uiPeek.show{opacity:.6;pointer-events:auto;}
+#uiPeek:hover{opacity:.96;background:rgba(14,30,48,.9);}
+#uiPeek svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.4;}
 /* ---------- 手势识别面板 ---------- */
 .gesture{
   position:absolute;
@@ -273,6 +302,14 @@ body{
         <span>清空照片</span>
       </button>
       <input id="photoInput" type="file" accept="image/*" multiple hidden>
+      <button class="ctrl" id="btnHideUI" type="button" aria-pressed="false" title="隐藏所有按钮（快捷键 H）">
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M2.6 10s2.9-5 7.4-5 7.4 5 7.4 5-2.9 5-7.4 5-7.4-5-7.4-5z"/>
+          <circle cx="10" cy="10" r="2.2"/>
+          <path d="M4.2 16.4L15.8 3.6" stroke-linecap="round"/>
+        </svg>
+        <span>隐藏按钮</span>
+      </button>
     </div>
     <div class="hint">单指拖动旋转 · 双指缩放 · 点击树身散开／聚合</div>
   </div>
@@ -286,6 +323,12 @@ body{
   </div>
 
   <div class="toast" id="toast"></div>
+  <button id="uiPeek" type="button" aria-label="显示按钮">
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M2.6 10s2.9-5 7.4-5 7.4 5 7.4 5-2.9 5-7.4 5-7.4-5-7.4-5z" stroke-linecap="round"/>
+      <circle cx="10" cy="10" r="2.2"/>
+    </svg>
+  </button>
 </div>
 
 <script>
@@ -1569,6 +1612,12 @@ body{
     toastTimer = window.setTimeout(function(){ toastEl.classList.remove('on'); }, 2600);
   }
 
+  function smoothFade(t){
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    return t * t * (3 - 2 * t);
+  }
+
   function roundRectPath(ctx, x, y, w, h, r){
     if (r > w * 0.5) r = w * 0.5;
     if (r > h * 0.5) r = h * 0.5;
@@ -1666,7 +1715,7 @@ body{
       sy = cy - yp * f * sc;
       w = 1.22 * f * sc;
       if (w < 6) continue;
-      list.push({ p: p, sx: sx, sy: sy, zp: zp, w: w, behind: zz > 0.4 });
+      list.push({ p: p, sx: sx, sy: sy, zp: zp, w: w, dep: zz / Math.max(0.75, rr) });
     }
 
     // 远的先画，近的盖在上面
@@ -1676,11 +1725,14 @@ body{
       var it = list[i];
       p = it.p;
       w = it.w;
+      // 转进背面时逐渐透明到看不见，转回来再渐渐出现
+      var fade = 1 - smoothFade((it.dep - 0.34) / 0.54);
+      if (fade < 0.03) continue;
       var hh = w * p.aspect;
       var bw = Math.max(2, w * 0.072);
 
       pctx.save();
-      pctx.globalAlpha = p.appear * (it.behind ? (0.58 + 0.24 * burst) : 0.94);   // 背面的照片压暗；散开后亮度回来一档
+      pctx.globalAlpha = p.appear * fade * 0.94;
       pctx.translate(it.sx, it.sy);
       pctx.rotate(p.tilt);
 
@@ -1848,7 +1900,71 @@ body{
   };
 
   /* ==========================================================================
-     8. 启动
+     8. 界面隐藏（截图／录屏）
+     ========================================================================== */
+  var stageEl = document.getElementById('stage');
+  var dockEl = document.querySelector('.dock');
+  var btnHideUI = document.getElementById('btnHideUI');
+  var uiPeek = document.getElementById('uiPeek');
+  var uiPinned = false;      // H / 「隐藏按钮」：彻底隐藏，只能手动恢复
+  var uiIdleTimer = 0, peekTimer = 0, overDock = false, lastPeek = 0;
+
+  function showUI(){
+    stageEl.classList.remove('ui-idle');
+    stageEl.classList.remove('ui-hide');
+  }
+  function armIdle(){
+    if (uiIdleTimer) window.clearTimeout(uiIdleTimer);
+    if (uiPinned) return;
+    uiIdleTimer = window.setTimeout(function(){
+      if (!uiPinned && !overDock) stageEl.classList.add('ui-idle');
+    }, 4200);
+  }
+  function flashPeek(){
+    if (!uiPinned) return;
+    var now = Date.now();
+    if (now - lastPeek < 160) return;
+    lastPeek = now;
+    uiPeek.classList.add('show');
+    if (peekTimer) window.clearTimeout(peekTimer);
+    peekTimer = window.setTimeout(function(){ uiPeek.classList.remove('show'); }, 2400);
+  }
+  function poke(){
+    if (uiPinned){ flashPeek(); return; }
+    showUI();
+    armIdle();
+  }
+  function setPinned(on){
+    uiPinned = on;
+    btnHideUI.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (uiIdleTimer) window.clearTimeout(uiIdleTimer);
+    if (on){
+      stageEl.classList.add('ui-hide');
+      showToast('界面已隐藏 · 按 H 或点右下角小圆点恢复');
+    } else {
+      showUI();
+      uiPeek.classList.remove('show');
+      armIdle();
+    }
+  }
+
+  btnHideUI.addEventListener('click', function(e){ e.stopPropagation(); setPinned(true); });
+  uiPeek.addEventListener('click', function(e){ e.stopPropagation(); setPinned(false); });
+  window.addEventListener('keydown', function(e){
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var t = e.target;
+    if (t && t.closest && t.closest('[contenteditable="true"],input,textarea')) return;
+    if (e.key === 'h' || e.key === 'H'){ setPinned(!uiPinned); }
+  });
+  window.addEventListener('pointermove', poke, {passive:true});
+  window.addEventListener('pointerdown', poke, {passive:true});
+  window.addEventListener('wheel', poke, {passive:true});
+  dockEl.addEventListener('pointerenter', function(){ overDock = true; if (!uiPinned) showUI(); });
+  dockEl.addEventListener('pointerleave', function(){ overDock = false; armIdle(); });
+  armIdle();
+
+  /* ==========================================================================
+     9. 启动
      ========================================================================== */
   resize();
 
