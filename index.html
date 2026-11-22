@@ -1009,6 +1009,7 @@ body{
   var handRotSm = 0;
   var handLastSee = 0;
   var handPumpId = 0;
+  var handPumpError = null;
 
   function setHandState(text, cls){
     handStateTxt.textContent = text;
@@ -1132,12 +1133,30 @@ body{
   function startHandPump(){
     if (handPumpId) return;
     var lastSent = 0;
+    var sending = false;
+    handPumpError = null;
     (function pump(){
       if (!gestureOn){ handPumpId = 0; return; }
       var now = performance.now();
-      if (handModel && handVideo.readyState >= 2 && handVideo.currentTime > 0 && now - lastSent > 60){
+      if (!sending && handModel && handVideo.readyState >= 2 && handVideo.currentTime > 0 && now - lastSent > 55){
         lastSent = now;
-        try { handModel.send({ image: handVideo }); } catch (e){}
+        sending = true;
+        try {
+          handModel.send({ image: handVideo }).then(function(){
+            sending = false;
+          }).catch(function(err){
+            sending = false;
+            if (!handPumpError){
+              handPumpError = err && err.message ? err.message : 'send-failed';
+              setHandState('识别器异常，重试中', 'warn');
+              try { handModel.close && handModel.close(); } catch (e){}
+              handModel = null;
+              window.setTimeout(function(){ if (gestureOn) loadHandsScript(0); }, 800);
+            }
+          });
+        } catch (e){
+          sending = false;
+        }
       }
       handPumpId = window.requestAnimationFrame(pump);
     })();
