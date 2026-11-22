@@ -1022,6 +1022,7 @@ body{
   var handLastSee = 0;
   var handPumpId = 0;
   var handPumpError = null;
+  var handCost = [];
 
   function setHandState(text, cls){
     handStateTxt.textContent = text;
@@ -1246,10 +1247,13 @@ body{
     (function pump(){
       if (!gestureOn){ handPumpId = 0; return; }
       var now = performance.now();
-      if (handModel && handVideo.readyState >= 2 && handVideo.currentTime > 0 && now - lastSent > 55){
+      if (handModel && handVideo.readyState >= 2 && handVideo.currentTime > 0 && now - lastSent > 88){
         lastSent = now;
         try {
+          var t0 = performance.now();
           var res = handModel.detectForVideo(handVideo, Math.round(now));
+          handCost.push(performance.now() - t0);
+          if (handCost.length > 30) handCost.shift();
           onHandResults(res);
         } catch (err){
           handPumpError = (err && err.message) ? err.message : 'detect-failed';
@@ -1275,7 +1279,7 @@ body{
 
     navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
+      video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 360 } }
     }).then(function(stream){
       handStream = stream;
       handVideo.srcObject = stream;
@@ -1331,6 +1335,12 @@ body{
     burst: function(){ return burstTarget; },
     model: function(){ return handModel ? 'ready' : (handLoading ? 'loading' : 'none'); },
     error: function(){ return handPumpError || ''; },
+    cost: function(){
+      if (!handCost.length) return 'no-data';
+      var a = handCost.slice(), s = 0, mx = 0;
+      for (var i = 0; i < a.length; i++){ s += a[i]; if (a[i] > mx) mx = a[i]; }
+      return Math.round(s / a.length) + 'ms avg / ' + Math.round(mx) + 'ms max / n=' + a.length;
+    },
     initModel: function(){ ensureHandModel(); return handLoading; },
     detectCanvas: function(){
       if (!handModel) return 'no-model';
