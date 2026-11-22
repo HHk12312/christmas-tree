@@ -987,11 +987,10 @@ body{
   });
 
   /* ---------- 手势：张开五指=散开 / 握拳=合拢 / 转手=旋转 ---------- */
-  var HAND_BASES = [
-    'https://registry.npmmirror.com/@mediapipe/hands/0.4.1675469240/files/',
-    'https://fastly.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/'
-  ];
-  var handsBase = '';
+  // 模型和 wasm 都跟着页面一起托管在 GitHub Pages，不再依赖第三方 CDN
+  var HAND_ASSET_BASE = 'https://hhk12312.github.io/christmas-tree';
+  var handLib = null;
+  var handLoading = false;
   var handModel = null;
   var gestureOn = false;
   var handStream = null;
@@ -1102,7 +1101,7 @@ body{
 
   function onHandResults(res){
     if (!gestureOn) return;
-    var lms = res && res.multiHandLandmarks;
+    var lms = res && res.landmarks;
     if (!lms || !lms.length){
       if (performance.now() - handLastSee > 300){
         handCandidate = ''; handCandidateN = 0;
@@ -1114,70 +1113,61 @@ body{
     onHandLandmarks(lms[0]);
   }
 
-  function loadHandsScript(i){
-    if (i >= HAND_BASES.length){
-      setHandState('识别组件加载失败', 'warn');
-      stopGesture();
-      return;
-    }
-    var s = document.createElement('script');
-    s.src = HAND_BASES[i] + 'hands.js';
-    s.onload = function(){
-      handsBase = HAND_BASES[i];
-      startHandsModel();
-    };
-    s.onerror = function(){ loadHandsScript(i + 1); };
-    document.head.appendChild(s);
+  function ensureHandModel(){
+    if (handModel || handLoading) return;
+    handLoading = true;
+    setHandState('模型加载中…', '');
+    import(HAND_ASSET_BASE + '/vision_bundle.mjs').then(function(mod){
+      handLib = mod;
+      return mod.FilesetResolver.forVisionTasks(HAND_ASSET_BASE);
+    }).then(function(fileset){
+      function create(delegate){
+        return handLib.HandLandmarker.createFromOptions(fileset, {
+          baseOptions: {
+            modelAssetPath: HAND_ASSET_BASE + '/hand_landmarker.task',
+            delegate: delegate
+          },
+          runningMode: 'VIDEO',
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        });
+      }
+      return create('GPU').catch(function(){ return create('CPU'); });
+    }).then(function(lm){
+      handModel = lm;
+      handLoading = false;
+      if (gestureOn) startHandPump();
+      else setHandState('就绪', '');
+    }).catch(function(err){
+      handLoading = false;
+      setHandState('模型加载失败', 'warn');
+      handPumpError = (err && err.message) ? err.message : 'load-failed';
+    });
   }
 
   function startHandPump(){
     if (handPumpId) return;
     var lastSent = 0;
-    var sending = false;
-    handPumpError = null;
     (function pump(){
       if (!gestureOn){ handPumpId = 0; return; }
       var now = performance.now();
-      if (!sending && handModel && handVideo.readyState >= 2 && handVideo.currentTime > 0 && now - lastSent > 55){
+      if (handModel && handVideo.readyState >= 2 && handVideo.currentTime > 0 && now - lastSent > 55){
         lastSent = now;
-        sending = true;
         try {
-          handModel.send({ image: handVideo }).then(function(){
-            sending = false;
-          }).catch(function(err){
-            sending = false;
-            if (!handPumpError){
-              handPumpError = err && err.message ? err.message : 'send-failed';
-              setHandState('识别器异常，重试中', 'warn');
-              try { handModel.close && handModel.close(); } catch (e){}
-              handModel = null;
-              window.setTimeout(function(){ if (gestureOn) loadHandsScript(0); }, 800);
-            }
-          });
-        } catch (e){
-          sending = false;
+          var res = handModel.detectForVideo(handVideo, Math.round(now));
+          onHandResults(res);
+        } catch (err){
+          handPumpError = (err && err.message) ? err.message : 'detect-failed';
+          setHandState('识别器异常，重启中', 'warn');
+          try { handModel.close(); } catch (e){}
+          handModel = null;
+          window.setTimeout(function(){ if (gestureOn) ensureHandModel(); }, 900);
         }
       }
       handPumpId = window.requestAnimationFrame(pump);
     })();
-  }
-
-  function startHandsModel(){
-    if (typeof window.Hands !== 'function'){
-      setHandState('识别组件不可用', 'warn');
-      return;
-    }
-    if (!handModel){
-      handModel = new window.Hands({ locateFile: function(f){ return handsBase + f; } });
-      handModel.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 0,
-        minDetectionConfidence: 0.6,
-        minTrackingConfidence: 0.55
-      });
-      handModel.onResults(onHandResults);
-    }
-    if (gestureOn) startHandPump();
   }
 
   function startGesture(){
@@ -1198,16 +1188,8 @@ body{
       handVideo.srcObject = stream;
       var p = handVideo.play();
       if (p && p.catch) p.catch(function(){});
-      if (!handModel){
-        if (typeof window.Hands === 'function'){
-          handsBase = handsBase || HAND_BASES[0];
-          startHandsModel();
-        } else {
-          loadHandsScript(0);
-        }
-      } else {
-        startHandPump();
-      }
+      if (handModel) startHandPump();
+      else ensureHandModel();
     }).catch(function(err){
       gestureOn = false;
       syncHandUI();
@@ -1254,17 +1236,21 @@ body{
     feed: function(lm){ onHandLandmarks(lm); },
     angle: function(){ return angle; },
     burst: function(){ return burstTarget; },
-    model: function(){ return handModel ? 'ready' : 'none'; },
-    initModel: function(){ if (!handModel) loadHandsScript(0); return 'loading'; },
-    testSend: function(){
+    model: function(){ return handModel ? 'ready' : (handLoading ? 'loading' : 'none'); },
+    error: function(){ return handPumpError || ''; },
+    initModel: function(){ ensureHandModel(); return handLoading; },
+    detectCanvas: function(){
       if (!handModel) return 'no-model';
       var c = document.createElement('canvas');
       c.width = 320; c.height = 240;
       var g = c.getContext('2d');
       g.fillStyle = '#101820'; g.fillRect(0, 0, 320, 240);
-      gestureOn = true;
-      handModel.send({ image: c });
-      return 'sent';
+      try {
+        var res = handModel.detectForVideo(c, Math.round(performance.now()));
+        return 'hands=' + (res.landmarks ? res.landmarks.length : 'n/a');
+      } catch (e){
+        return 'err=' + e.message;
+      }
     }
   };
 
