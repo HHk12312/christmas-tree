@@ -167,24 +167,31 @@ body{
 #stage.ui-hide .gesture{opacity:0;pointer-events:none;}
 #uiPeek{
   position:absolute;
-  right:calc(14px + env(safe-area-inset-right, 0px));
-  bottom:calc(14px + env(safe-area-inset-bottom, 0px));
+  right:calc(10px + env(safe-area-inset-right, 0px));
+  bottom:calc(10px + env(safe-area-inset-bottom, 0px));
   z-index:6;
-  width:32px;height:32px;
+  width:44px;height:44px;
   display:flex;align-items:center;justify-content:center;
+  padding:0;
   border-radius:50%;
-  color:rgba(206,232,255,.86);
-  background:rgba(6,14,26,.62);
-  border:1px solid rgba(150,200,238,.22);
+  color:rgba(206,232,255,.9);
+  background:rgba(6,14,26,.5);
+  border:1px solid rgba(150,200,238,.2);
   cursor:pointer;
-  opacity:0;
-  pointer-events:none;
-  transition:opacity .3s ease, background .2s ease;
+  opacity:.28;
+  pointer-events:auto;
+  transition:opacity .3s ease, background .2s ease, transform .12s ease;
   -webkit-tap-highlight-color:transparent;
 }
-#uiPeek.show{opacity:.6;pointer-events:auto;}
-#uiPeek:hover{opacity:.96;background:rgba(14,30,48,.9);}
-#uiPeek svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.4;}
+#uiPeek:hover{opacity:.95;background:rgba(14,30,48,.92);}
+#uiPeek:active{transform:scale(.94);}
+#uiPeek.show{opacity:.9;}
+#uiPeek svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.4;}
+#stage:not(.ui-hide) #uiPeek{opacity:0;pointer-events:none;}
+#stage.ui-hide #uiPeek{opacity:.3;}
+#stage.ui-hide #uiPeek:hover,
+#stage.ui-hide #uiPeek.show{opacity:.95;}
+#stage.ui-hide #uiPeek svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.4;}
 /* ---------- 手势识别面板 ---------- */
 .gesture{
   position:absolute;
@@ -311,7 +318,7 @@ body{
         <span>隐藏按钮</span>
       </button>
     </div>
-    <div class="hint">单指拖动旋转 · 双指缩放 · 点击树身散开／聚合</div>
+    <div class="hint">拖动旋转／上下移动 · 滚轮缩放 · 双击复位 · 点击树身散开／聚合</div>
   </div>
 
   <div class="gesture" id="gestureBox">
@@ -580,6 +587,7 @@ body{
     'uniform float u_zoom;',
     'uniform float u_burst;',
     'uniform vec2 u_res;',
+    'uniform float u_panY;',
     'varying vec3 v_col;',
     'varying float v_size;',
     'void main(){',
@@ -602,7 +610,7 @@ body{
     '  float sc = u_scale * u_zoom;',
     '  float f = (900.0 * 0.63) / zp;',
     '  float sx = u_res.x * 0.5 + xz * f * sc;',
-    '  float sy = u_res.y * 0.5 - yp * f * sc;',
+    '  float sy = u_res.y * 0.5 - yp * f * sc + u_panY;',
     '  gl_Position = vec4(sx / u_res.x * 2.0 - 1.0, 1.0 - sy / u_res.y * 2.0, 0.0, 1.0);',
     '  float rad = max(1.0, 3.6 - zp * 0.13);',
     '  float sz = max(1.4, rad * 2.4 * sc);',
@@ -684,6 +692,7 @@ body{
     loc.res = gl.getUniformLocation(prog, 'u_res');
     loc.zoom = gl.getUniformLocation(prog, 'u_zoom');
     loc.burst = gl.getUniformLocation(prog, 'u_burst');
+    loc.panY = gl.getUniformLocation(prog, 'u_panY');
     loc.alpha = gl.getUniformLocation(prog, 'u_alpha');
 
     gl.enable(gl.BLEND);
@@ -826,7 +835,7 @@ body{
 
         f = F / zp;
         sx = cx + xz * f * SCALE * zoom;
-        sy = cy - yp * f * SCALE * zoom;
+        sy = cy - yp * f * SCALE * zoom + panY;
         if (sx < -4 || sx > PW + 4 || sy < -4 || sy > PH + 4) continue;
 
         rad = Math.max(1, 3.6 - zp * 0.13);
@@ -843,6 +852,7 @@ body{
   var flingVel = 0;
   var dragging = false;
   var lastX = 0;
+  var lastY = 0;
   var lastMoveT = 0;
   var lastT = 0;
   var rafId = 0;
@@ -850,6 +860,16 @@ body{
   var reduced = false;
   var paused = false;       // 暂停自转（拖动仍然有效）
   var zoom = 1, zoomTarget = 1;
+  var panY = 0, panTarget = 0;
+
+  function panLimit(){
+    // 放大后允许上下挪的幅度更大，小缩放时留一点余量就够
+    return PH * (0.2 + 0.3 * (zoomTarget - 1));
+  }
+  function clampPan(v){
+    var L = panLimit();
+    return Math.max(-L, Math.min(L, v));
+  }
   var burst = 0, burstTarget = 0;
 
   try {
@@ -861,6 +881,7 @@ body{
       gl.uniform1f(loc.angle, angle);
       gl.uniform1f(loc.zoom, zoom);
       gl.uniform1f(loc.burst, burst);
+      gl.uniform1f(loc.panY, panY);
       gl.uniform1f(loc.alpha, 0.84 - 0.15 * burst);   // 散开后稍压一点亮度，避免糊成一片
       gl.clearColor(0.012, 0.027, 0.059, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -910,8 +931,11 @@ body{
     var k = 1 - Math.exp(-dt * 6.5);
     burst += (burstTarget - burst) * k;
     zoom += (zoomTarget - zoom) * k;
+    panTarget = clampPan(panTarget);
+    panY += (panTarget - panY) * k;
     if (Math.abs(burstTarget - burst) < 0.0015) burst = burstTarget;
     if (Math.abs(zoomTarget - zoom) < 0.0015) zoom = zoomTarget;
+    if (Math.abs(panTarget - panY) < 0.6) panY = panTarget;
 
     updateSnow(dt);
     updatePhotos(dt);
@@ -961,7 +985,7 @@ body{
 
   stage.addEventListener('pointerdown', function(e){
     if (e.target && e.target.closest &&
-        (e.target.closest('.signature') || e.target.closest('.controls'))) return;
+        (e.target.closest('.signature') || e.target.closest('.controls') || e.target.closest('#uiPeek'))) return;
 
     pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
     pointerCount++;
@@ -969,6 +993,7 @@ body{
     if (pointerCount === 1){
       dragging = true;
       lastX = e.clientX;
+      lastY = e.clientY;
       lastMoveT = performance.now();
       downX = e.clientX;
       downY = e.clientY;
@@ -1003,10 +1028,19 @@ body{
 
     if (!dragging) return;
     var dx = e.clientX - lastX;
+    var dy = e.clientY - lastY;
     lastX = e.clientX;
+    lastY = e.clientY;
     if (Math.abs(e.clientX - downX) > 6 || Math.abs(e.clientY - downY) > 6) movedFar = true;
 
     angle += dx * 0.0085;
+
+    // 上下拖动：整棵树跟着走，放大后能挪到下面看被挡住的照片
+    if (dy){
+      var ratio = PH / Math.max(1, stage.clientHeight || window.innerHeight);
+      panTarget = clampPan(panTarget + dy * ratio);
+    }
+    panY = panTarget;
 
     var now = performance.now();
     var dt = Math.max(0.008, (now - lastMoveT) / 1000);
@@ -1045,6 +1079,15 @@ body{
     zoomTarget = clampZoom(zoomTarget * Math.exp(-e.deltaY * 0.0012));
     if (!running) renderFrame();
   }, { passive: false });
+
+  // 双击复位缩放和上下位置
+  stage.addEventListener('dblclick', function(e){
+    if (e.target && e.target.closest &&
+        (e.target.closest('.signature') || e.target.closest('.controls') || e.target.closest('#uiPeek'))) return;
+    zoomTarget = 1;
+    panTarget = 0;
+    if (!running) renderFrame();
+  });
 
   /* ---------- 底部按钮 ---------- */
   var btnBurst = document.getElementById('btnBurst');
@@ -1712,7 +1755,7 @@ body{
 
       f = fBase / zp;
       sx = cx + xz * f * sc;
-      sy = cy - yp * f * sc;
+      sy = cy - yp * f * sc + panY;
       w = 1.22 * f * sc;
       if (w < 6) continue;
       list.push({ p: p, sx: sx, sy: sy, zp: zp, w: w, dep: zz / Math.max(0.75, rr) });
