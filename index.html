@@ -1008,6 +1008,7 @@ body{
   var handPrevX = null;
   var handRotSm = 0;
   var handLastSee = 0;
+  var handPumpId = 0;
 
   function setHandState(text, cls){
     handStateTxt.textContent = text;
@@ -1128,30 +1129,36 @@ body{
     document.head.appendChild(s);
   }
 
-  function startHandsModel(){
-    if (typeof window.Hands !== 'function'){
-      setHandState('识别组件不可用', 'warn');
-      return;
-    }
-    handModel = new window.Hands({ locateFile: function(f){ return handsBase + f; } });
-    handModel.setOptions({
-      maxNumHands: 1,
-      modelComplexity: 0,
-      minDetectionConfidence: 0.6,
-      minTrackingConfidence: 0.55
-    });
-    handModel.onResults(onHandResults);
-
+  function startHandPump(){
+    if (handPumpId) return;
     var lastSent = 0;
     (function pump(){
-      if (!gestureOn) return;
+      if (!gestureOn){ handPumpId = 0; return; }
       var now = performance.now();
       if (handModel && handVideo.readyState >= 2 && handVideo.currentTime > 0 && now - lastSent > 60){
         lastSent = now;
         try { handModel.send({ image: handVideo }); } catch (e){}
       }
-      window.requestAnimationFrame(pump);
+      handPumpId = window.requestAnimationFrame(pump);
     })();
+  }
+
+  function startHandsModel(){
+    if (typeof window.Hands !== 'function'){
+      setHandState('识别组件不可用', 'warn');
+      return;
+    }
+    if (!handModel){
+      handModel = new window.Hands({ locateFile: function(f){ return handsBase + f; } });
+      handModel.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 0,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.55
+      });
+      handModel.onResults(onHandResults);
+    }
+    if (gestureOn) startHandPump();
   }
 
   function startGesture(){
@@ -1179,6 +1186,8 @@ body{
         } else {
           loadHandsScript(0);
         }
+      } else {
+        startHandPump();
       }
     }).catch(function(err){
       gestureOn = false;
@@ -1196,6 +1205,10 @@ body{
 
   function stopGesture(){
     gestureOn = false;
+    if (handPumpId){
+      window.cancelAnimationFrame(handPumpId);
+      handPumpId = 0;
+    }
     syncHandUI();
     gestureBox.classList.remove('on');
     if (handStream){
