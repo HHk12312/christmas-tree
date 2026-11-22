@@ -1680,7 +1680,7 @@ body{
       var bw = Math.max(2, w * 0.072);
 
       pctx.save();
-      pctx.globalAlpha = p.appear * (it.behind ? 0.58 : 0.94);   // 背面的照片压暗，假装被树挡住
+      pctx.globalAlpha = p.appear * (it.behind ? (0.58 + 0.24 * burst) : 0.94);   // 背面的照片压暗；散开后亮度回来一档
       pctx.translate(it.sx, it.sy);
       pctx.rotate(p.tilt);
 
