@@ -1196,35 +1196,142 @@ body{
     return handLibPromise;
   }
 
+  var handWorker = null;
+  var workerReady = false;
+  var workerBusy = false;
+  var workerSentAt = 0;
+
+  // 识别放到 Worker 里跑：主线程只负责把画面帧甩过去，动画线程不再被识别卡住
+  var HAND_WORKER_CODE = [
+    'var lm = null;',
+    'self.onmessage = function(ev){',
+    '  var m = ev.data;',
+    "  if (m.type === 'init'){",
+    '    import(m.bundle).then(function(mod){',
+    '      return mod.FilesetResolver.forVisionTasks(m.wasmDir).then(function(fs){',
+    '        return mod.HandLandmarker.createFromOptions(fs, {',
+    "          baseOptions: { modelAssetBuffer: new Uint8Array(m.buffer), delegate: 'CPU' },",
+    "          runningMode: 'VIDEO', numHands: 1,",
+    '          minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5',
+    '        });',
+    '      });',
+    "    }).then(function(x){ lm = x; self.postMessage({type:'ready'}); })",
+    "      .catch(function(e){ self.postMessage({type:'error', stage:'init', msg:String((e && e.message) || e)}); });",
+    "  } else if (m.type === 'frame'){",
+    "    if (!lm){ self.postMessage({type:'skip'}); return; }",
+    '    var t0 = performance.now();',
+    '    try {',
+    '      var res = lm.detectForVideo(m.bmp, m.ts);',
+    '      var lms = (res.landmarks && res.landmarks.length) ? res.landmarks[0].map(function(p){ return {x:p.x, y:p.y, z:p.z}; }) : null;',
+    "      self.postMessage({type:'result', cost: performance.now() - t0, lm: lms});",
+    '    } catch (e){',
+    "      self.postMessage({type:'error', stage:'detect', msg:String((e && e.message) || e)});",
+    '    } finally {',
+    '      try { m.bmp.close(); } catch (e2) {}',
+    '    }',
+    '  }',
+    '};'
+  ].join('\n');
+
+  function createMainThreadModel(buf, fileset){
+    function create(delegate){
+      return handLib.HandLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetBuffer: buf,
+          delegate: delegate
+        },
+        runningMode: 'VIDEO',
+        numHands: 1,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+    }
+    create('GPU').catch(function(){ return create('CPU'); }).then(function(lm){
+      handModel = lm;
+      handLoading = false;
+      window.__handDebug.host = handHost.script + ' (main)';
+      if (gestureOn) startHandPump();
+      else setHandState('就绪', '');
+    }).catch(function(err){
+      handLoading = false;
+      setHandState('模型加载失败', 'warn');
+      handPumpError = (err && err.message) ? err.message : 'load-failed';
+    });
+  }
+
+  function startHandWorker(buf){
+    var url = URL.createObjectURL(new Blob([HAND_WORKER_CODE], { type: 'text/javascript' }));
+    handWorker = new Worker(url, { type: 'module' });
+
+    handWorker.onmessage = function(ev){
+      var d = ev.data || {};
+      if (d.type === 'ready'){
+        workerReady = true;
+        handLoading = false;
+        window.__handDebug.host = handHost.script + ' (worker)';
+        if (gestureOn) startHandPump();
+        else setHandState('就绪', '');
+      } else if (d.type === 'result'){
+        workerBusy = false;
+        if (typeof d.cost === 'number'){
+          handCost.push(d.cost);
+          if (handCost.length > 30) handCost.shift();
+        }
+        onHandResults({ landmarks: d.lm ? [d.lm] : [] });
+      } else if (d.type === 'skip'){
+        workerBusy = false;
+      } else if (d.type === 'error'){
+        workerBusy = false;
+        handPumpError = d.msg || 'worker-error';
+        workerReady = false;
+        try { handWorker.terminate(); } catch (e){}
+        handWorker = null;
+        if (d.stage === 'init'){
+          // Worker 起不来就退回主线程版本
+          window.__noWorker = true;
+          if (modelBuf){
+            handLoading = true;
+            Promise.all([loadLib(), Promise.resolve(modelBuf)]).then(function(v){
+              createMainThreadModel(v[1], v[0].fileset);
+            });
+          } else {
+            handLoading = false;
+            setHandState('模型加载失败', 'warn');
+          }
+        } else {
+          setHandState('识别器异常，重启中', 'warn');
+          window.setTimeout(function(){ if (gestureOn) ensureHandModel(); }, 900);
+        }
+      }
+    };
+
+    handWorker.postMessage({
+      type: 'init',
+      bundle: handHost.script + '/vision_bundle.mjs',
+      wasmDir: handHost.wasm,
+      buffer: buf
+    });
+  }
+
   function ensureHandModel(){
-    if (handModel || handLoading) return;
+    if (handLoading || handModel || workerReady) return;
     handLoading = true;
     if (!modelPct) setHandState('模型加载中…', '');
     else paintHandProgress();
 
     Promise.all([loadLib(), getModelBuffer()]).then(function(v){
-      var fileset = v[0].fileset;
       var buf = v[1];
-      function create(delegate){
-        return handLib.HandLandmarker.createFromOptions(fileset, {
-          baseOptions: {
-            modelAssetBuffer: buf,
-            delegate: delegate
-          },
-          runningMode: 'VIDEO',
-          numHands: 1,
-          minHandDetectionConfidence: 0.5,
-          minHandPresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5
-        });
+      if (typeof Worker === 'undefined' || typeof createImageBitmap !== 'function' || window.__noWorker){
+        createMainThreadModel(buf, v[0].fileset);
+      } else {
+        try {
+          startHandWorker(buf);
+        } catch (e){
+          window.__noWorker = true;
+          createMainThreadModel(buf, v[0].fileset);
+        }
       }
-      return create('GPU').catch(function(){ return create('CPU'); });
-    }).then(function(lm){
-      handModel = lm;
-      handLoading = false;
-      window.__handDebug.host = handHost.script;
-      if (gestureOn) startHandPump();
-      else setHandState('就绪', '');
     }).catch(function(err){
       handLoading = false;
       setHandState('模型加载失败', 'warn');
@@ -1247,7 +1354,20 @@ body{
     (function pump(){
       if (!gestureOn){ handPumpId = 0; return; }
       var now = performance.now();
-      if (handModel && handVideo.readyState >= 2 && handVideo.currentTime > 0 && now - lastSent > 88){
+      var videoOk = handVideo.readyState >= 2 && handVideo.currentTime > 0;
+
+      if (handWorker && workerReady && videoOk && now - lastSent > 88){
+        // 上一帧卡住时兜底解锁，避免整条链路停死
+        if (workerBusy && now - workerSentAt > 1500) workerBusy = false;
+        if (!workerBusy){
+          lastSent = now;
+          workerBusy = true;
+          workerSentAt = now;
+          createImageBitmap(handVideo).then(function(bmp){
+            handWorker.postMessage({ type: 'frame', bmp: bmp, ts: Math.round(performance.now()) }, [bmp]);
+          }).catch(function(){ workerBusy = false; });
+        }
+      } else if (handModel && videoOk && now - lastSent > 88){
         lastSent = now;
         try {
           var t0 = performance.now();
@@ -1285,7 +1405,7 @@ body{
       handVideo.srcObject = stream;
       var p = handVideo.play();
       if (p && p.catch) p.catch(function(){});
-      if (handModel) startHandPump();
+      if (handModel || workerReady) startHandPump();
       else ensureHandModel();
     }).catch(function(err){
       gestureOn = false;
@@ -1314,6 +1434,7 @@ body{
       handStream = null;
     }
     handVideo.srcObject = null;
+    workerBusy = false;
     handPrevRot = null; handPrevX = null; handRotSm = 0;
     handCandidate = ''; handCandidateN = 0;
   }
@@ -1333,7 +1454,7 @@ body{
     feed: function(lm){ onHandLandmarks(lm); },
     angle: function(){ return angle; },
     burst: function(){ return burstTarget; },
-    model: function(){ return handModel ? 'ready' : (handLoading ? 'loading' : 'none'); },
+    model: function(){ return (handModel || workerReady) ? 'ready' : (handLoading ? 'loading' : 'none'); },
     error: function(){ return handPumpError || ''; },
     cost: function(){
       if (!handCost.length) return 'no-data';
