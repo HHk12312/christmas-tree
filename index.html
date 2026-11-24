@@ -1084,6 +1084,9 @@ body{
     if (e.target && e.target.closest &&
         (e.target.closest('.signature') || e.target.closest('#drawer') || e.target.closest('#menuFab') || e.target.closest('#uiPeek'))) return;
 
+    // 菜单开着时，点树身＝收起菜单，这一下不触发“散开”
+    if (drawerOpen){ setDrawerOpen(false); suppressTap = true; }
+
     pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
     pointerCount++;
 
@@ -1155,7 +1158,7 @@ body{
       var wasTap = !hadPinch && !movedFar && (performance.now() - downT) < 480 && !suppressTap;
       suppressTap = false;
       endDrag();
-      if (wasTap) toggleBurst();
+      if (wasTap && !drawerOpen) toggleBurst();
       pinchStartDist = 0;
       hadPinch = false;
       flingVel = 0;
@@ -2502,11 +2505,6 @@ body{
       window.setTimeout(function(){ setDrawerOpen(false); }, 90);
     }
   });
-  window.addEventListener('pointerdown', function(e){
-    if (!drawerOpen) return;
-    if (e.target && e.target.closest && (e.target.closest('#drawer') || e.target.closest('#menuFab'))) return;
-    setDrawerOpen(false);
-  }, true);
 
   btnHideUI.addEventListener('click', function(e){ e.stopPropagation(); setPinned(true); });
   uiPeek.addEventListener('click', function(e){ e.stopPropagation(); setPinned(false); });
