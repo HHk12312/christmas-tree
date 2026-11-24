@@ -1785,22 +1785,40 @@ body{
       var fade = 1 - smoothFade((it.dep - 0.34) / 0.54);
       if (fade < 0.03) continue;
       var hh = w * p.aspect;
-      var bw = Math.max(2, w * 0.072);
+      var rad = w * 0.1;
+      var hair = Math.max(1, w * 0.014);        // 极细的一道亮边
+      var rim = hair * 1.6;
 
       pctx.save();
       pctx.globalAlpha = p.appear * fade * 0.94;
       pctx.translate(it.sx, it.sy);
       pctx.rotate(p.tilt);
 
-      pctx.shadowColor = 'rgba(150,205,255,.32)';
-      pctx.shadowBlur = Math.min(26, w * 0.24);
-      pctx.fillStyle = 'rgba(247,252,255,.96)';
-      roundRectPath(pctx, -w * 0.5, -hh * 0.5, w, hh, w * 0.055);
+      // 背后一层柔和冷光，让照片从粒子堆里"浮"起来
+      pctx.shadowColor = 'rgba(150,205,255,.45)';
+      pctx.shadowBlur = Math.min(26, w * 0.22);
+      pctx.fillStyle = 'rgba(226,244,255,.12)';
+      roundRectPath(pctx, -w * 0.5, -hh * 0.5, w, hh, rad);
       pctx.fill();
 
       pctx.shadowBlur = 0;
       pctx.shadowColor = 'transparent';
-      pctx.drawImage(p.img, -w * 0.5 + bw, -hh * 0.5 + bw, w - bw * 2, hh - bw * 2);
+
+      // 照片本体（圆角裁切）
+      var iw = w - rim * 2;
+      var ih = hh - rim * 2;
+      pctx.save();
+      roundRectPath(pctx, -iw * 0.5, -ih * 0.5, iw, ih, Math.max(2, rad - rim));
+      pctx.clip();
+      pctx.drawImage(p.img, -iw * 0.5, -ih * 0.5, iw, ih);
+      pctx.restore();
+
+      // 细亮边 + 一点点内侧阴影感的描边
+      pctx.lineWidth = hair;
+      pctx.strokeStyle = 'rgba(233,246,255,.85)';
+      roundRectPath(pctx, -w * 0.5 + hair * 0.5, -hh * 0.5 + hair * 0.5, w - hair, hh - hair, rad);
+      pctx.stroke();
+
       pctx.restore();
     }
     pctx.globalAlpha = 1;
@@ -1863,30 +1881,50 @@ body{
     } catch (err){}
   }
 
+  var PHOTO_PREVIEW_MAX = 1600;   // 只是显示用的清晰预览；原图原封不动存本地
+
+  function makePreview(src, sw, sh, done){
+    var k = Math.min(1, PHOTO_PREVIEW_MAX / Math.max(sw, sh));
+    var cw = Math.max(1, Math.round(sw * k));
+    var ch = Math.max(1, Math.round(sh * k));
+    var cv = document.createElement('canvas');
+    cv.width = cw;
+    cv.height = ch;
+    cv.getContext('2d').drawImage(src, 0, 0, cw, ch);
+    done(cv, ch / cw);
+  }
+
   function loadImageFromBlob(blob, persist){
-    var url = URL.createObjectURL(blob);
-    var img = new Image();
-    img.onload = function(){
-      var iw = img.naturalWidth || 1;
-      var ih = img.naturalHeight || 1;
-      var k = Math.min(1, 360 / iw);
-      var cw = Math.max(1, Math.round(iw * k));
-      var ch = Math.max(1, Math.round(ih * k));
-      var cv = document.createElement('canvas');
-      cv.width = cw;
-      cv.height = ch;
-      cv.getContext('2d').drawImage(img, 0, 0, cw, ch);
-      URL.revokeObjectURL(url);
-      addPhotoCanvas(cv, ch / cw);
-      if (persist && cv.toBlob){
-        cv.toBlob(function(b){ saveThumb(b); }, 'image/jpeg', 0.82);
-      }
-    };
-    img.onerror = function(){
-      URL.revokeObjectURL(url);
-      showToast('有张照片读不出来');
-    };
-    img.src = url;
+    function fallback(){
+      var url = URL.createObjectURL(blob);
+      var img = new Image();
+      img.onload = function(){
+        var iw = img.naturalWidth || 1;
+        var ih = img.naturalHeight || 1;
+        makePreview(img, iw, ih, function(cv, aspect){
+          URL.revokeObjectURL(url);
+          addPhotoCanvas(cv, aspect);
+          if (persist) saveThumb(blob);          // 存的是原文件，不重新压
+        });
+      };
+      img.onerror = function(){
+        URL.revokeObjectURL(url);
+        showToast('有张照片读不出来');
+      };
+      img.src = url;
+    }
+    // 优先用 createImageBitmap，并按 EXIF 方向解码，避免竖拍照片比例被拉扁
+    if (window.createImageBitmap){
+      createImageBitmap(blob, { imageOrientation: 'from-image' }).then(function(bm){
+        makePreview(bm, bm.width, bm.height, function(cv, aspect){
+          addPhotoCanvas(cv, aspect);
+          if (persist) saveThumb(blob);
+          try { bm.close(); } catch (e){}
+        });
+      }).catch(fallback);
+    } else {
+      fallback();
+    }
   }
 
   function handlePhotoFiles(list){
@@ -1952,7 +1990,9 @@ body{
       }
       return photos.length;
     },
-    clear: function(){ photos = []; pctx.clearRect(0, 0, PW, PH); layoutPhotos(); }
+    clear: function(){ photos = []; pctx.clearRect(0, 0, PW, PH); layoutPhotos(); },
+    addBlob: function(blob){ loadImageFromBlob(blob, false); },
+    aspects: function(){ return photos.map(function(p){ return Math.round(p.aspect * 1000) / 1000; }); }
   };
 
   /* ==========================================================================
