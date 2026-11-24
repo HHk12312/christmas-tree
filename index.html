@@ -100,7 +100,7 @@ body{
   color:rgba(255,255,255,.26);
 }
 
-/* ---------- 底部操作区 ---------- */
+/* ---------- 底部：一个「功能」按钮 + 右侧抽屉 ---------- */
 .dock{
   position:absolute;
   left:50%;
@@ -115,38 +115,106 @@ body{
   max-width:100%;
   pointer-events:none;
 }
-.controls{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;pointer-events:auto;max-width:min(92vw,560px);}
-.ctrl{
+#menuFab{
   display:inline-flex;
   align-items:center;
-  justify-content:center;
-  gap:7px;
-  height:44px;
-  padding:0 17px;
+  gap:9px;
+  height:46px;
+  padding:0 20px;
   font:inherit;
   font-size:14px;
-  letter-spacing:.01em;
-  white-space:nowrap;
-  color:rgba(226,241,255,.88);
-  background:rgba(7,16,28,.72);
-  border:1px solid rgba(150,200,238,.24);
+  letter-spacing:.03em;
+  color:rgba(228,242,255,.9);
+  background:rgba(7,16,28,.74);
+  border:1px solid rgba(150,200,238,.26);
   border-radius:999px;
   cursor:pointer;
+  pointer-events:auto;
+  -webkit-backdrop-filter:blur(10px);
+  backdrop-filter:blur(10px);
+  box-shadow:0 10px 28px rgba(0,0,0,.34);
   transition:background .2s ease,border-color .2s ease,color .2s ease,transform .12s ease;
   -webkit-tap-highlight-color:transparent;
 }
-.ctrl:hover{background:rgba(14,30,48,.84);border-color:rgba(170,215,245,.46);color:#fff;}
-.ctrl:active{transform:scale(.97);}
-.ctrl:focus-visible{outline:2px solid rgba(150,212,255,.62);outline-offset:3px;}
-.ctrl svg{width:15px;height:15px;flex:0 0 auto;stroke:currentColor;fill:none;stroke-width:1.4;}
-.ctrl[aria-pressed="true"]{
-  color:#eaf7ff;
-  background:rgba(28,84,128,.58);
-  border-color:rgba(150,215,255,.55);
+#menuFab:hover{background:rgba(14,30,48,.88);border-color:rgba(170,215,245,.48);color:#fff;}
+#menuFab:active{transform:scale(.97);}
+#menuFab[aria-expanded="true"]{color:#f2fbff;background:rgba(28,84,128,.6);border-color:rgba(150,215,255,.55);}
+#menuFab .bars{display:flex;flex-direction:column;gap:3px;}
+#menuFab .bars i{display:block;width:16px;height:1.5px;border-radius:2px;background:currentColor;opacity:.85;}
+#menuFab svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.4;}
+
+.drawer{
+  position:absolute;
+  right:calc(14px + env(safe-area-inset-right, 0px));
+  bottom:calc(76px + env(safe-area-inset-bottom, 0px));
+  z-index:5;
+  width:min(240px, 80vw);
+  max-height:calc(100vh - 118px);
+  display:flex;
+  flex-direction:column;
+  padding:8px;
+  border-radius:20px;
+  background:rgba(6,14,26,.8);
+  border:1px solid rgba(150,200,238,.24);
+  box-shadow:0 24px 60px rgba(0,0,0,.5);
+  -webkit-backdrop-filter:blur(20px) saturate(1.15);
+  backdrop-filter:blur(20px) saturate(1.15);
+  opacity:0;
+  pointer-events:none;
+  transform:translateY(10px) scale(.985);
+  transform-origin:100% 100%;
+  transition:opacity .22s ease,transform .26s cubic-bezier(.2,.85,.25,1);
+  overflow:auto;
+  -webkit-overflow-scrolling:touch;
 }
-.ctrl .ico-play{display:none;}
-.ctrl.is-paused .ico-pause{display:none;}
-.ctrl.is-paused .ico-play{display:block;}
+.drawer.open{opacity:1;pointer-events:auto;transform:none;}
+.drawer-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:4px 8px 8px 12px;
+  color:rgba(190,220,245,.62);
+  font-size:11px;
+  letter-spacing:.16em;
+}
+.drawer-close{
+  width:30px;height:30px;
+  display:flex;align-items:center;justify-content:center;
+  padding:0;border-radius:50%;
+  color:rgba(214,236,255,.8);
+  background:transparent;
+  border:1px solid transparent;
+  cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+}
+.drawer-close:hover{background:rgba(30,56,84,.6);border-color:rgba(150,200,238,.26);}
+.drawer-close svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5;}
+.drawer-list{display:flex;flex-direction:column;gap:4px;}
+.drawer .ctrl{
+  display:flex;
+  width:100%;
+  height:42px;
+  justify-content:flex-start;
+  gap:10px;
+  padding:0 12px;
+  border-radius:12px;
+  background:transparent;
+  border:1px solid transparent;
+  color:rgba(226,241,255,.9);
+  font-size:13.5px;
+  text-align:left;
+}
+.drawer .ctrl:hover{background:rgba(22,44,70,.55);border-color:rgba(150,200,238,.2);color:#fff;}
+.drawer .ctrl:active{transform:none;background:rgba(30,58,88,.62);}
+.drawer .ctrl[aria-pressed="true"]{
+  background:rgba(28,84,128,.44);
+  border-color:rgba(150,215,255,.3);
+  color:#effaff;
+}
+.drawer .ctrl svg{width:17px;height:17px;}
+.drawer .ctrl .ico-play{display:none;}
+.drawer .ctrl.is-paused .ico-pause{display:none;}
+.drawer .ctrl.is-paused .ico-play{display:block;}
 .dock .hint{
   font-size:11px;
   line-height:1.45;
@@ -157,13 +225,15 @@ body{
   pointer-events:none;
 }
 /* ---------- 界面隐藏（截图／录屏用） ---------- */
-.dock,.gesture{transition:opacity .34s ease, transform .34s ease;}
+.dock,.gesture,.drawer{transition:opacity .34s ease, transform .34s ease;}
 #stage.ui-idle .dock,
 #stage.ui-hide .dock{
   opacity:0;
   pointer-events:none;
   transform:translateX(-50%) translateY(12px);
 }
+#stage.ui-idle .drawer,
+#stage.ui-hide .drawer{opacity:0;pointer-events:none;}
 #stage.ui-hide .gesture{opacity:0;pointer-events:none;}
 #uiPeek{
   position:absolute;
@@ -269,7 +339,23 @@ body{
     <div class="signature" contenteditable="true" spellcheck="false" role="textbox" aria-label="署名，可编辑" data-placeholder="点击写上你的名字"></div>
   </div>
   <div class="dock">
-    <div class="controls">
+    <button id="menuFab" type="button" aria-expanded="false" aria-controls="drawer" aria-label="打开功能菜单">
+      <svg viewBox="0 0 20 20" aria-hidden="true">
+        <path d="M3.4 6.2h13.2M3.4 10h13.2M3.4 13.8h13.2" stroke-linecap="round"/>
+      </svg>
+      <span>功能</span>
+    </button>
+    <div class="hint">拖动旋转／上下移动 · 滚轮缩放 · 双击复位 · 点击树身散开／聚合</div>
+  </div>
+
+  <aside class="drawer" id="drawer" aria-hidden="true" aria-label="功能菜单">
+    <div class="drawer-head">
+      <span>功能</span>
+      <button class="drawer-close" id="drawerClose" type="button" aria-label="收起菜单">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5l-10 10" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="drawer-list">
       <button class="ctrl" id="btnBurst" type="button" aria-pressed="false">
         <svg viewBox="0 0 20 20" aria-hidden="true">
           <path d="M10 2.2v2.6M10 15.2v2.6M2.2 10h2.6M15.2 10h2.6M4.6 4.6l1.9 1.9M13.5 13.5l1.9 1.9M15.4 4.6l-1.9 1.9M6.5 13.5l-1.9 1.9"/>
@@ -308,7 +394,6 @@ body{
         </svg>
         <span>清空照片</span>
       </button>
-      <input id="photoInput" type="file" accept="image/*" multiple hidden>
       <button class="ctrl" id="btnMusic" type="button" aria-pressed="false" title="添加自己的音乐（点一下选文件；播放中再点=暂停；右键/长按清除）">
         <svg viewBox="0 0 20 20" aria-hidden="true">
           <path d="M11.2 4.6v8.2" stroke-linecap="round"/>
@@ -318,8 +403,6 @@ body{
         </svg>
         <span id="musicLabel">加音乐</span>
       </button>
-      <input id="bgmInput" type="file" accept="audio/*" hidden>
-      <audio id="bgmAudio" loop preload="auto" style="display:none"></audio>
       <button class="ctrl" id="btnHideUI" type="button" aria-pressed="false" title="隐藏所有按钮（快捷键 H）">
         <svg viewBox="0 0 20 20" aria-hidden="true">
           <path d="M2.6 10s2.9-5 7.4-5 7.4 5 7.4 5-2.9 5-7.4 5-7.4-5-7.4-5z"/>
@@ -328,9 +411,11 @@ body{
         </svg>
         <span>隐藏按钮</span>
       </button>
+      <input id="photoInput" type="file" accept="image/*" multiple hidden>
+      <input id="bgmInput" type="file" accept="audio/*" hidden>
+      <audio id="bgmAudio" loop preload="auto" style="display:none"></audio>
     </div>
-    <div class="hint">拖动旋转／上下移动 · 滚轮缩放 · 双击复位 · 点击树身散开／聚合</div>
-  </div>
+  </aside>
 
   <div class="gesture" id="gestureBox">
     <div class="cam-wrap">
@@ -721,7 +806,7 @@ body{
   function resize(){
     var w = stage.clientWidth || window.innerWidth;
     var h = stage.clientHeight || window.innerHeight;
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var dpr = Math.min(window.devicePixelRatio || 1, gestureOn ? 1.5 : 2);
 
     var pw = Math.round(w * dpr);
     var ph = Math.round(h * dpr);
@@ -997,7 +1082,7 @@ body{
 
   stage.addEventListener('pointerdown', function(e){
     if (e.target && e.target.closest &&
-        (e.target.closest('.signature') || e.target.closest('.controls') || e.target.closest('#uiPeek'))) return;
+        (e.target.closest('.signature') || e.target.closest('#drawer') || e.target.closest('#menuFab') || e.target.closest('#uiPeek'))) return;
 
     pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
     pointerCount++;
@@ -1096,7 +1181,7 @@ body{
   // 双击复位缩放和上下位置
   stage.addEventListener('dblclick', function(e){
     if (e.target && e.target.closest &&
-        (e.target.closest('.signature') || e.target.closest('.controls') || e.target.closest('#uiPeek'))) return;
+        (e.target.closest('.signature') || e.target.closest('#drawer') || e.target.closest('#menuFab') || e.target.closest('#uiPeek'))) return;
     zoomTarget = 1;
     panTarget = 0;
     if (!running) renderFrame();
@@ -1177,6 +1262,12 @@ body{
   var handPumpId = 0;
   var handPumpError = null;
   var handCost = [];
+  // 低配设备：先把摄像头画面缩到小画布再送识别，主线程开销能砍掉一大半
+  var handSmall = document.createElement('canvas');
+  handSmall.width = 320; handSmall.height = 240;
+  var handSmallCtx = handSmall.getContext('2d', { willReadFrequently: true });
+  var handLowPower = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+                     (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
   function setHandState(text, cls){
     handStateTxt.textContent = text;
@@ -1503,18 +1594,36 @@ body{
   function startHandPump(){
     if (handPumpId) return;
     var lastSent = 0;
+    var avgCost = 0;
     (function pump(){
       if (!gestureOn){ handPumpId = 0; return; }
       var now = performance.now();
       var videoOk = handVideo.readyState >= 2 && handVideo.currentTime > 0;
 
-      if (handModel && videoOk && now - lastSent > 66){
+      // 自适应识别间隔：设备慢就拉长，避免每一帧都堵在主线程上
+      var gap = handLowPower ? 110 : 66;
+      if (avgCost > 0){
+        if (avgCost > 50) gap = Math.min(260, Math.round(avgCost * 2.3));
+        else if (avgCost > 32) gap = Math.min(180, Math.round(avgCost * 1.9));
+      }
+
+      if (handModel && videoOk && now - lastSent > gap){
         lastSent = now;
         try {
           var t0 = performance.now();
-          var res = handModel.detectForVideo(handVideo, Math.round(now));
-          handCost.push(performance.now() - t0);
+          var payload = handVideo;
+          // 手机上（或本机已明显吃力时）先降采样到 320×240 再识别
+          if (handLowPower || avgCost > 28){
+            try {
+              handSmallCtx.drawImage(handVideo, 0, 0, handSmall.width, handSmall.height);
+              payload = handSmall;
+            } catch (eDraw){ payload = handVideo; }
+          }
+          var res = handModel.detectForVideo(payload, Math.round(now));
+          var cost = performance.now() - t0;
+          handCost.push(cost);
           if (handCost.length > 30) handCost.shift();
+          avgCost = avgCost === 0 ? cost : (avgCost * 0.75 + cost * 0.25);
           onHandResults(res);
         } catch (err){
           handPumpError = (err && err.message) ? err.message : 'detect-failed';
@@ -1536,6 +1645,7 @@ body{
     gestureOn = true;
     syncHandUI();
     gestureBox.classList.add('on');
+    if (typeof resize === 'function') resize();      // 手势模式自动降一点渲染分辨率，保帧率
     setHandState('正在打开摄像头…', '');
 
     // 双击本地文件（file://）时浏览器经常不给摄像头，卡住不弹窗，这里兜个底提示
@@ -1548,7 +1658,12 @@ body{
 
     navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 360 } }
+      video: {
+        facingMode: 'user',
+        width: { ideal: handLowPower ? 320 : 480 },
+        height: { ideal: handLowPower ? 240 : 360 },
+        frameRate: { ideal: 24, max: 24 }
+      }
     }).then(function(stream){
       window.clearTimeout(camTimer);
       handStream = stream;
@@ -1580,6 +1695,7 @@ body{
     }
     syncHandUI();
     gestureBox.classList.remove('on');
+    if (typeof resize === 'function') resize();      // 退出后恢复高清渲染
     if (handStream){
       handStream.getTracks().forEach(function(t){ t.stop(); });
       handStream = null;
@@ -2292,7 +2408,7 @@ body{
   try {
     if (localStorage.getItem('tree-bgm') === '1'){
       var armBGM = function(ev){
-        if (ev && ev.target && ev.target.closest && ev.target.closest('.controls')) return;
+        if (ev && ev.target && ev.target.closest && ev.target.closest('#drawer') || ev.target.closest('#menuFab')) return;
         window.removeEventListener('pointerdown', armBGM);
         window.removeEventListener('keydown', armBGM);
         if (!bgmOn && localBGM){
@@ -2312,6 +2428,10 @@ body{
   var dockEl = document.querySelector('.dock');
   var btnHideUI = document.getElementById('btnHideUI');
   var uiPeek = document.getElementById('uiPeek');
+  var menuFabEl = document.getElementById('menuFab');
+  var drawerEl = document.getElementById('drawer');
+  var drawerCloseEl = document.getElementById('drawerClose');
+  var drawerOpen = false;
   var uiPinned = false;      // H / 「隐藏按钮」：彻底隐藏，只能手动恢复
   var uiIdleTimer = 0, peekTimer = 0, overDock = false, lastPeek = 0;
 
@@ -2321,9 +2441,9 @@ body{
   }
   function armIdle(){
     if (uiIdleTimer) window.clearTimeout(uiIdleTimer);
-    if (uiPinned) return;
+    if (uiPinned || drawerOpen) return;
     uiIdleTimer = window.setTimeout(function(){
-      if (!uiPinned && !overDock) stageEl.classList.add('ui-idle');
+      if (!uiPinned && !overDock && !drawerOpen) stageEl.classList.add('ui-idle');
     }, 4200);
   }
   function flashPeek(){
@@ -2341,6 +2461,7 @@ body{
     armIdle();
   }
   function setPinned(on){
+    if (on) setDrawerOpen(false);
     uiPinned = on;
     btnHideUI.setAttribute('aria-pressed', on ? 'true' : 'false');
     if (uiIdleTimer) window.clearTimeout(uiIdleTimer);
@@ -2354,12 +2475,46 @@ body{
     }
   }
 
+  // ---------- 功能抽屉：点右下角「功能」展开，再点收起 ----------
+  function setDrawerOpen(on){
+    drawerOpen = !!on;
+    drawerEl.classList.toggle('open', drawerOpen);
+    drawerEl.setAttribute('aria-hidden', drawerOpen ? 'false' : 'true');
+    menuFabEl.setAttribute('aria-expanded', drawerOpen ? 'true' : 'false');
+    if (drawerOpen){
+      showUI();
+      if (uiIdleTimer) window.clearTimeout(uiIdleTimer);
+    } else {
+      armIdle();
+    }
+  }
+  menuFabEl.addEventListener('click', function(e){
+    e.stopPropagation();
+    setDrawerOpen(!drawerOpen);
+  });
+  drawerCloseEl.addEventListener('click', function(e){
+    e.stopPropagation();
+    setDrawerOpen(false);
+  });
+  drawerEl.addEventListener('click', function(e){
+    var c = e.target && e.target.closest && e.target.closest('.ctrl');
+    if (c && c.id !== 'btnHideUI'){
+      window.setTimeout(function(){ setDrawerOpen(false); }, 90);
+    }
+  });
+  window.addEventListener('pointerdown', function(e){
+    if (!drawerOpen) return;
+    if (e.target && e.target.closest && (e.target.closest('#drawer') || e.target.closest('#menuFab'))) return;
+    setDrawerOpen(false);
+  }, true);
+
   btnHideUI.addEventListener('click', function(e){ e.stopPropagation(); setPinned(true); });
   uiPeek.addEventListener('click', function(e){ e.stopPropagation(); setPinned(false); });
   window.addEventListener('keydown', function(e){
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     var t = e.target;
     if (t && t.closest && t.closest('[contenteditable="true"],input,textarea')) return;
+    if (e.key === 'Escape'){ setDrawerOpen(false); return; }
     if (e.key === 'm' || e.key === 'M'){ toggleBGM(); return; }
     if (e.key === 'h' || e.key === 'H'){ setPinned(!uiPinned); }
   });
@@ -2389,12 +2544,12 @@ body{
   // 恢复上次加过的照片缩略图
   openPhotoDB();
 
-  // 这版重写了照片比例算法；加载时提示一次，方便确认浏览器拿到的是新版而不是缓存
+  // 这版把按钮收进抽屉、优化了手势性能；加载时提示一次，方便确认不是缓存
   try {
-    var BUILD_TAG = 'v2.8-photo-ratio';
+    var BUILD_TAG = 'v2.9-drawer';
     if (localStorage.getItem('tree-build') !== BUILD_TAG){
       localStorage.setItem('tree-build', BUILD_TAG);
-      window.setTimeout(function(){ showToast('照片已按原图比例显示'); }, 1200);
+      window.setTimeout(function(){ showToast('功能已收进右下角抽屉，手势模式更省资源'); }, 1200);
     }
   } catch (ignore){}
 
