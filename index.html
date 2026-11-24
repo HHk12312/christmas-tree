@@ -1726,7 +1726,7 @@ body{
       r: 0, rT: 0, y: 0, yT: 0,
       haloR: 5.5, haloY: 0,
       appear: 0,
-      tilt: (Math.random() - 0.5) * 0.2
+      tilt: 0                      // 保持正正直立，避免倾斜看起来"变宽"
     };
     photos.push(p);
     layoutPhotos();
@@ -1784,15 +1784,16 @@ body{
       // 转进背面时逐渐透明到看不见，转回来再渐渐出现
       var fade = 1 - smoothFade((it.dep - 0.34) / 0.54);
       if (fade < 0.03) continue;
-      var hh = w * p.aspect;
+      // 宽高比只用照片画布自己的尺寸，绝不信任任何缓存值，杜绝"被拉宽"
+      var ar = (p.img && p.img.width) ? (p.img.height / p.img.width) : p.aspect;
+      var hh = w * ar;
+      p._lastW = w; p._lastH = hh;
       var rad = w * 0.1;
       var hair = Math.max(1, w * 0.014);        // 极细的一道亮边
-      var rim = hair * 1.6;
 
       pctx.save();
       pctx.globalAlpha = p.appear * fade * 0.94;
       pctx.translate(it.sx, it.sy);
-      pctx.rotate(p.tilt);
 
       // 背后一层柔和冷光，让照片从粒子堆里"浮"起来
       pctx.shadowColor = 'rgba(150,205,255,.45)';
@@ -1804,16 +1805,14 @@ body{
       pctx.shadowBlur = 0;
       pctx.shadowColor = 'transparent';
 
-      // 照片本体（圆角裁切）
-      var iw = w - rim * 2;
-      var ih = hh - rim * 2;
+      // 照片本体：整块铺满，不内缩，比例和原图完全一致（圆角裁切）
       pctx.save();
-      roundRectPath(pctx, -iw * 0.5, -ih * 0.5, iw, ih, Math.max(2, rad - rim));
+      roundRectPath(pctx, -w * 0.5, -hh * 0.5, w, hh, rad);
       pctx.clip();
-      pctx.drawImage(p.img, -iw * 0.5, -ih * 0.5, iw, ih);
+      pctx.drawImage(p.img, -w * 0.5, -hh * 0.5, w, hh);
       pctx.restore();
 
-      // 细亮边 + 一点点内侧阴影感的描边
+      // 细亮边（描在画面内侧，不改变照片可视区比例）
       pctx.lineWidth = hair;
       pctx.strokeStyle = 'rgba(233,246,255,.85)';
       roundRectPath(pctx, -w * 0.5 + hair * 0.5, -hh * 0.5 + hair * 0.5, w - hair, hh - hair, rad);
@@ -1883,28 +1882,126 @@ body{
 
   var PHOTO_PREVIEW_MAX = 1600;   // 只是显示用的清晰预览；原图原封不动存本地
 
-  function makePreview(src, sw, sh, done){
-    var k = Math.min(1, PHOTO_PREVIEW_MAX / Math.max(sw, sh));
-    var cw = Math.max(1, Math.round(sw * k));
-    var ch = Math.max(1, Math.round(sh * k));
+  // 只读文件头（最多 256KB），拿 JPEG 的 EXIF 方向和原始像素尺寸；非 JPEG 给默认值
+  function readJpegMeta(buf){
+    var meta = { o: 1, w: 0, h: 0 };
+    try {
+      var dv = new DataView(buf), len = dv.byteLength, off = 2;
+      if (len < 8 || dv.getUint16(0) !== 0xFFD8) return meta;
+      while (off + 4 <= len){
+        if (dv.getUint8(off) !== 0xFF){ off++; continue; }
+        var m = dv.getUint8(off + 1);
+        if (m === 0x01 || (m >= 0xD0 && m <= 0xD9)){ off += 2; continue; }
+        if (m === 0xDA) break;
+        var size = dv.getUint16(off + 2);
+        if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC && off + 9 <= len){
+          meta.h = dv.getUint16(off + 5);       // SOF：高在前，宽在后
+          meta.w = dv.getUint16(off + 7);
+        } else if (m === 0xE1 && off + 10 <= len && dv.getUint32(off + 4) === 0x45786966){
+          var tiff = off + 10;
+          var le = dv.getUint16(tiff) === 0x4949;
+          var ifd = tiff + (le ? dv.getUint32(tiff + 4, true) : dv.getUint32(tiff + 4));
+          var n = le ? dv.getUint16(ifd, true) : dv.getUint16(ifd);
+          for (var i = 0; i < n && ifd + 2 + i * 12 + 12 <= len; i++){
+            var e = ifd + 2 + i * 12;
+            var tag = le ? dv.getUint16(e, true) : dv.getUint16(e);
+            if (tag === 0x0112){
+              var v = le ? dv.getUint16(e + 8, true) : dv.getUint16(e + 8);
+              if (v >= 1 && v <= 8) meta.o = v;
+              break;
+            }
+          }
+        }
+        off += 2 + size;
+      }
+    } catch (err){}
+    return meta;
+  }
+
+  // 判断位图是否仍是"原始方向"：需要我们自己按 EXIF 摆正
+  function bitmapIsRaw(bm, meta){
+    if (!meta.w || !meta.h || meta.o < 5) return false;
+    var aRaw = meta.w / meta.h;       // 原始（横向）宽高比
+    var aDisp = meta.h / meta.w;      // 摆正后（竖向）宽高比
+    if (Math.abs(aRaw - aDisp) < 0.02) return false;
+    var aBm = bm.width / bm.height;
+    return Math.abs(aBm - aRaw) < Math.abs(aBm - aDisp);
+  }
+
+  // 按 EXIF 方向把位图摆正（2~8 的镜像/旋转），返回摆正后的画布
+  function uprightCanvas(src, o, needRotate){
+    var sw = Math.max(1, src.width), sh = Math.max(1, src.height);
+    var swap = needRotate && o >= 5 && o <= 8;
+    var cw = swap ? sh : sw, ch = swap ? sw : sh;
     var cv = document.createElement('canvas');
     cv.width = cw;
     cv.height = ch;
-    cv.getContext('2d').drawImage(src, 0, 0, cw, ch);
-    done(cv, ch / cw);
+    var g = cv.getContext('2d');
+    if (needRotate){
+      switch (o){
+        case 2: g.transform(-1, 0, 0, 1, cw, 0); break;
+        case 3: g.transform(-1, 0, 0, -1, cw, ch); break;
+        case 4: g.transform(1, 0, 0, -1, 0, ch); break;
+        case 5: g.transform(0, 1, 1, 0, 0, 0); break;
+        case 6: g.transform(0, 1, -1, 0, cw, 0); break;
+        case 7: g.transform(0, -1, -1, 0, cw, ch); break;
+        case 8: g.transform(0, -1, 1, 0, 0, ch); break;
+      }
+    }
+    g.drawImage(src, 0, 0);
+    return cv;
+  }
+
+  // 只缩不放，生成清晰预览；宽高比严格来自摆正后的画布
+  function shrinkCanvas(cv, done){
+    var k = Math.min(1, PHOTO_PREVIEW_MAX / Math.max(cv.width, cv.height));
+    if (k >= 1){ done(cv); return; }
+    var c2 = document.createElement('canvas');
+    c2.width = Math.max(1, Math.round(cv.width * k));
+    c2.height = Math.max(1, Math.round(cv.height * k));
+    var g = c2.getContext('2d');
+    g.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high';
+    g.drawImage(cv, 0, 0, c2.width, c2.height);
+    done(c2);
   }
 
   function loadImageFromBlob(blob, persist){
+    function accept(cv){
+      addPhotoCanvas(cv, cv.height / cv.width);   // 宽高比只认画布自身尺寸
+      if (persist) saveThumb(blob);               // 存的是原文件，不重新压
+    }
+
     function fallback(){
       var url = URL.createObjectURL(blob);
       var img = new Image();
       img.onload = function(){
-        var iw = img.naturalWidth || 1;
-        var ih = img.naturalHeight || 1;
-        makePreview(img, iw, ih, function(cv, aspect){
-          URL.revokeObjectURL(url);
-          addPhotoCanvas(cv, aspect);
-          if (persist) saveThumb(blob);          // 存的是原文件，不重新压
+        URL.revokeObjectURL(url);
+        blob.slice(0, 256 * 1024).arrayBuffer().then(function(buf){
+          var meta = readJpegMeta(buf);
+          var iw = Math.max(1, img.naturalWidth || 1);
+          var ih = Math.max(1, img.naturalHeight || 1);
+          var swap = meta.o >= 5 && meta.o <= 8;
+          var cv;
+          if (meta.w && swap && Math.abs(iw / meta.w - 1) < 0.02 && Math.abs(ih / meta.h - 1) < 0.02){
+            // 少数浏览器 naturalWidth 还是原始方向，但 drawImage 会把像素摆正
+            cv = document.createElement('canvas');
+            cv.width = ih;
+            cv.height = iw;
+            cv.getContext('2d').drawImage(img, 0, 0, ih, iw);
+          } else {
+            cv = document.createElement('canvas');
+            cv.width = iw;
+            cv.height = ih;
+            cv.getContext('2d').drawImage(img, 0, 0);
+          }
+          shrinkCanvas(cv, accept);
+        }).catch(function(){
+          var cv2 = document.createElement('canvas');
+          cv2.width = Math.max(1, img.naturalWidth || 1);
+          cv2.height = Math.max(1, img.naturalHeight || 1);
+          cv2.getContext('2d').drawImage(img, 0, 0);
+          shrinkCanvas(cv2, accept);
         });
       };
       img.onerror = function(){
@@ -1913,14 +2010,17 @@ body{
       };
       img.src = url;
     }
-    // 优先用 createImageBitmap，并按 EXIF 方向解码，避免竖拍照片比例被拉扁
+
+    // 主路径：位图 + 自己解析 EXIF；万一浏览器给的是未摆正的原始像素，就手动摆正
     if (window.createImageBitmap){
-      createImageBitmap(blob, { imageOrientation: 'from-image' }).then(function(bm){
-        makePreview(bm, bm.width, bm.height, function(cv, aspect){
-          addPhotoCanvas(cv, aspect);
-          if (persist) saveThumb(blob);
+      blob.slice(0, 256 * 1024).arrayBuffer().then(function(buf){
+        var meta = readJpegMeta(buf);
+        createImageBitmap(blob, { imageOrientation: 'from-image' }).then(function(bm){
+          var rotate = bitmapIsRaw(bm, meta);
+          var cv = uprightCanvas(bm, meta.o, rotate);
           try { bm.close(); } catch (e){}
-        });
+          shrinkCanvas(cv, accept);
+        }).catch(fallback);
       }).catch(fallback);
     } else {
       fallback();
@@ -1992,7 +2092,9 @@ body{
     },
     clear: function(){ photos = []; pctx.clearRect(0, 0, PW, PH); layoutPhotos(); },
     addBlob: function(blob){ loadImageFromBlob(blob, false); },
-    aspects: function(){ return photos.map(function(p){ return Math.round(p.aspect * 1000) / 1000; }); }
+    aspects: function(){ return photos.map(function(p){ return Math.round(p.aspect * 1000) / 1000; }); },
+    dims: function(){ return photos.map(function(p){ return p.img.width + 'x' + p.img.height; }); },
+    rects: function(){ return photos.map(function(p){ return { w: Math.round(p._lastW || 0), h: Math.round(p._lastH || 0), ar: Math.round((p._lastH / Math.max(1, p._lastW)) * 1000) / 1000 }; }); }
   };
 
   /* ==========================================================================
@@ -2263,6 +2365,15 @@ body{
 
   // 恢复上次加过的照片缩略图
   openPhotoDB();
+
+  // 这版重写了照片比例算法；加载时提示一次，方便确认浏览器拿到的是新版而不是缓存
+  try {
+    var BUILD_TAG = 'v2.7-photo-ratio';
+    if (localStorage.getItem('tree-build') !== BUILD_TAG){
+      localStorage.setItem('tree-build', BUILD_TAG);
+      window.setTimeout(function(){ showToast('照片已按原图比例显示'); }, 1200);
+    }
+  } catch (ignore){}
 
   // 调试口子：地址带 debug=1 时把帧率和识别耗时写进标题，方便远程看数据
   if (location.search.indexOf('debug=1') >= 0){
