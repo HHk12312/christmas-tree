@@ -1646,6 +1646,28 @@ body{
     }, 120);
   });
 
+  // 手机横竖屏切换 / 地址栏收起时，resize 事件不一定来；用 ResizeObserver 兜住，
+  // 否则画布像素尺寸还停在旧方向，整幅画面（尤其照片）会被拉宽
+  window.addEventListener('orientationchange', function(){
+    window.setTimeout(function(){ resize(); if (!running) renderFrame(); }, 160);
+  });
+  if (window.ResizeObserver){
+    try {
+      new ResizeObserver(function(){
+        if (resizeTimer) window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(function(){ resize(); if (!running) renderFrame(); }, 80);
+      }).observe(stage);
+    } catch (e){}
+  }
+  if (window.visualViewport){
+    try {
+      window.visualViewport.addEventListener('resize', function(){
+        if (resizeTimer) window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(function(){ resize(); if (!running) renderFrame(); }, 80);
+      });
+    } catch (e){}
+  }
+
   /* ==========================================================================
      7.5 挂在树上的照片：可添加、随树旋转、散开时飘到四周
      ========================================================================== */
@@ -1711,7 +1733,7 @@ body{
     btnClearPhotos.style.display = n ? '' : 'none';
   }
 
-  function addPhotoCanvas(cv, aspect){
+  function addPhotoCanvas(cv, aspect, bg){
     if (photos.length >= PHOTO_MAX){
       showToast('最多 24 张，先清空一些');
       return;
@@ -1719,6 +1741,7 @@ body{
     var idx = photos.length;
     var p = {
       img: cv,
+      bg: bg || null,
       aspect: aspect,
       rnd: Math.random(),
       seed: Math.random(),
@@ -2368,7 +2391,7 @@ body{
 
   // 这版重写了照片比例算法；加载时提示一次，方便确认浏览器拿到的是新版而不是缓存
   try {
-    var BUILD_TAG = 'v2.7-photo-ratio';
+    var BUILD_TAG = 'v2.8-photo-ratio';
     if (localStorage.getItem('tree-build') !== BUILD_TAG){
       localStorage.setItem('tree-build', BUILD_TAG);
       window.setTimeout(function(){ showToast('照片已按原图比例显示'); }, 1200);
